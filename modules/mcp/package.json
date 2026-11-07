@@ -1,0 +1,18 @@
+{
+  "name": "@conclave/module-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Protocol dock for any MCP server over Streamable HTTP or SSE: its tools become Tool-port nodes.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*",
+    "@modelcontextprotocol/sdk": "^1.32.0"
+  },
+  "devDependencies": {
+    "zod": "^4.6.0"
+  }
+}

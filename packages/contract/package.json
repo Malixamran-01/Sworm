@@ -1,0 +1,14 @@
+{
+  "name": "@conclave/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node call contract, port definitions, workflow schema, events and API types shared by every Conclave package.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "uuidv7": "^1.2.1",
+    "zod": "^4.6.0"
+  }
+}

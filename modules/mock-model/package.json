@@ -1,0 +1,14 @@
+{
+  "name": "@conclave/module-mock-model",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic Model-port module for tests, demos and zero-cost test runs.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*"
+  }
+}

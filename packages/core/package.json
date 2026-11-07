@@ -1,0 +1,28 @@
+{
+  "name": "@conclave/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Conclave core: connections, workspaces, orchestrator, budgets, inbox, events. Knows ports, never products.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/db": "*",
+    "@conclave/engine": "*",
+    "@conclave/module-sdk": "*",
+    "@simplewebauthn/server": "^13.3.3",
+    "nodemailer": "^10.3.1",
+    "qrcode": "^1.5.4",
+    "web-push": "^3.6.7",
+    "zod": "^4.6.0"
+  },
+  "devDependencies": {
+    "@conclave/module-mock-model": "*",
+    "@conclave/module-openai-compatible": "*",
+    "@types/nodemailer": "^8.0.2",
+    "@types/qrcode": "^1.5.6",
+    "@types/web-push": "^3.6.4"
+  }
+}

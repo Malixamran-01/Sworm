@@ -1,0 +1,36 @@
+{
+  "name": "conclave",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Open-source control plane where models, agents, workflow engines and knowledge work together as one team.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "modules/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspace @conclave/server & npm run dev --workspace @conclave/web",
+    "dev:server": "npm run dev --workspace @conclave/server",
+    "dev:web": "npm run dev --workspace @conclave/web",
+    "start": "npm run start --workspace @conclave/server",
+    "build:web": "npm run build --workspace @conclave/web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
+    "lint:core-names": "node scripts/lint-core-names.mjs",
+    "test:pg": "node scripts/test-pg.mjs",
+    "test:a11y": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "1.56",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.0",
+    "vitest": "^5.1.0"
+  }
+}

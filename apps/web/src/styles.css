@@ -1,0 +1,241 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/400.css";
+
+/*
+ * Conclave design tokens, taken from the v2 UI mockups.
+ * Light is the reference theme; dark is derived from it.
+ * Fonts are bundled so a self-hosted instance makes no outside requests (SRS 2.4).
+ */
+:root,
+:root[data-theme="light"] {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #faf9f7;
+  --sunken: #f6f5f2;
+  --line: #e4e2dc;
+  --line-soft: #efede8;
+  --line-strong: #d6d3cc;
+  --line-dashed: #b8b5ae;
+  --ink: #18191b;
+  --ink-2: #3a3c41;
+  --muted: #5c5f66;
+
+  --accent: #2e5bff;
+  --accent-ink: #1e44cc;
+  --accent-hover: #142f8f;
+  --accent-soft: #eef1ff;
+  --accent-tint: #e8edff;
+  --selected: #f4f6ff;
+  --selected-2: #f8f9ff;
+  --on-accent: #ffffff;
+  --inverse: #18191b;
+  --on-inverse: #ffffff;
+
+  --good: #1f7a4c;
+  --good-soft: #e3f3ea;
+  --warn-ink: #8a5a00;
+  --warn-soft: #fff3d6;
+  --warn-line: #f2c46d;
+  --warn-strong: #d99a1e;
+  --warn-row: #fff8e8;
+  --bad: #b42318;
+  --bad-soft: #fdecea;
+  --bad-line: #f0a39b;
+  --alert: #c4320a;
+
+  /* Letter tiles for workspaces, roles and connections. */
+  --tile-blue-bg: #e8edff;
+  --tile-blue-fg: #1e44cc;
+  --tile-green-bg: #e3f3ea;
+  --tile-green-fg: #1f7a4c;
+  --tile-teal-bg: #dff2f4;
+  --tile-teal-fg: #146b75;
+  --tile-amber-bg: #f7e9d2;
+  --tile-amber-fg: #8a5a00;
+  --tile-grey-bg: #efede8;
+  --tile-grey-fg: #3a3c41;
+  --tile-peach-bg: #f7e3da;
+  --tile-peach-fg: #8f3b1b;
+  --tile-mint-bg: #ddf1e6;
+  --tile-mint-fg: #1f6b45;
+  --tile-sky-bg: #e1eafb;
+  --tile-sky-fg: #2a4f9e;
+  --tile-violet-bg: #f1e3f6;
+  --tile-violet-fg: #7a2e8e;
+
+  --focus: #2e5bff;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #121315;
+  --surface: #1a1b1e;
+  --surface-2: #1f2023;
+  --sunken: #16171a;
+  --line: #2c2e33;
+  --line-soft: #24262a;
+  --line-strong: #3a3d43;
+  --line-dashed: #4d5057;
+  --ink: #ecedef;
+  --ink-2: #c9cbd0;
+  --muted: #9a9da5;
+
+  --accent: #5b7cff;
+  --accent-ink: #a9bbff;
+  --accent-hover: #c7d3ff;
+  --accent-soft: #1d2645;
+  --accent-tint: #222c52;
+  --selected: #1a2140;
+  --selected-2: #191f36;
+  --on-accent: #0b1233;
+  --inverse: #ecedef;
+  --on-inverse: #121315;
+
+  --good: #4cc38a;
+  --good-soft: #15301f;
+  --warn-ink: #f2c46d;
+  --warn-soft: #3a2c10;
+  --warn-line: #6e5420;
+  --warn-strong: #d99a1e;
+  --warn-row: #2a2210;
+  --bad: #ff8a80;
+  --bad-soft: #3a1b19;
+  --bad-line: #6e2d28;
+  --alert: #e5533a;
+
+  --tile-blue-bg: #222c52;
+  --tile-blue-fg: #a9bbff;
+  --tile-green-bg: #15301f;
+  --tile-green-fg: #7fd8a8;
+  --tile-teal-bg: #13302f;
+  --tile-teal-fg: #7fd3d9;
+  --tile-amber-bg: #3a2c10;
+  --tile-amber-fg: #f2c46d;
+  --tile-grey-bg: #2a2c30;
+  --tile-grey-fg: #c9cbd0;
+  --tile-peach-bg: #3a2219;
+  --tile-peach-fg: #f0a98a;
+  --tile-mint-bg: #163024;
+  --tile-mint-fg: #8fd9b0;
+  --tile-sky-bg: #1c2a45;
+  --tile-sky-fg: #9db8f0;
+  --tile-violet-bg: #2f1f38;
+  --tile-violet-fg: #d7a6e6;
+
+  --focus: #7c95ff;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
+  --color-line-dashed: var(--line-dashed);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-tint: var(--accent-tint);
+  --color-selected: var(--selected);
+  --color-selected-2: var(--selected-2);
+  --color-on-accent: var(--on-accent);
+  --color-inverse: var(--inverse);
+  --color-on-inverse: var(--on-inverse);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+  --color-warn-strong: var(--warn-strong);
+  --color-warn-row: var(--warn-row);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-bad-line: var(--bad-line);
+  --color-alert: var(--alert);
+  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+/* Base styles live in the base layer so Tailwind utilities can override them. */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  a {
+    color: var(--accent-ink);
+  }
+  a:hover {
+    color: var(--accent-hover);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.output-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.pulse {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Dotted grid behind the workflow canvas; size and offset follow pan and zoom. */
+.canvas-grid {
+  background-image: radial-gradient(var(--line-strong) 1px, transparent 1.2px);
+}

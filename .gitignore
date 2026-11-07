@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+.DS_Store
+data-e2e/
+e2e/.auth/
+playwright-report/
+test-results/
+.claude/
+.github/

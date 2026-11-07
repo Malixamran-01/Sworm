@@ -1,0 +1,14 @@
+# A throwaway Postgres + pgvector for `npm run test:pg`. Not for real data.
+#   docker compose -f compose.test.yaml up -d
+services:
+  test-postgres:
+    image: pgvector/pgvector:pg17
+    container_name: conclave-test-pg
+    environment:
+      POSTGRES_USER: conclave
+      POSTGRES_PASSWORD: conclave
+      POSTGRES_DB: conclave
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data

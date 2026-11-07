@@ -1,0 +1,46 @@
+# Lite profile (PROF-003): the Conclave container plus Postgres with pgvector.
+#   docker compose up -d
+# then open http://localhost:8787 and enter the setup code from:
+#   docker compose logs conclave
+services:
+  conclave:
+    build: .
+    image: conclave:lite
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      CONCLAVE_DATABASE_URL: postgres://conclave:${POSTGRES_PASSWORD:-conclave}@postgres:5432/conclave
+      CONCLAVE_PUBLIC_URL: ${CONCLAVE_PUBLIC_URL:-http://localhost:8787}
+      # Optional sign-in providers; see README.
+      CONCLAVE_GOOGLE_CLIENT_ID: ${CONCLAVE_GOOGLE_CLIENT_ID:-}
+      CONCLAVE_GOOGLE_CLIENT_SECRET: ${CONCLAVE_GOOGLE_CLIENT_SECRET:-}
+      CONCLAVE_GITHUB_CLIENT_ID: ${CONCLAVE_GITHUB_CLIENT_ID:-}
+      CONCLAVE_GITHUB_CLIENT_SECRET: ${CONCLAVE_GITHUB_CLIENT_SECRET:-}
+    volumes:
+      # Holds master.key. Back it up: without it, saved connection secrets cannot be read.
+      - conclave-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 2560m
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: conclave
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-conclave}
+      POSTGRES_DB: conclave
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conclave -d conclave"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 2g
+
+volumes:
+  conclave-data:
+  postgres-data:

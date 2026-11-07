@@ -1,0 +1,15 @@
+{
+  "name": "@conclave/module-anthropic",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference Model-port module for Claude models through the official Anthropic SDK.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*"
+  }
+}
