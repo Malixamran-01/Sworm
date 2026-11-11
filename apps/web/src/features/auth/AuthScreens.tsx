@@ -88,7 +88,7 @@ function Providers({ state }: { state: AuthStateDto }) {
         {state.providers.map((p) => (
           <a
             key={p.id}
-            href={`/v1/auth/oidc/${p.id}/start`}
+            href={p.startUrl}
             className="flex h-10 items-center justify-center rounded-[9px] border border-line-strong bg-surface text-sm font-semibold text-ink no-underline hover:bg-sunken hover:text-ink"
           >
             Continue with {p.name}

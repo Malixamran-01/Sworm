@@ -61,7 +61,7 @@ export interface NotifierOptions {
 /** Browser push services. A subscription to any other host is refused, so it cannot be used to make the server call inside the network. */
 export const DEFAULT_PUSH_HOSTS = ["fcm.googleapis.com", "push.services.mozilla.com", "notify.windows.com", "push.apple.com"];
 
-const IMPORTANT: ReadonlySet<InboxKind> = new Set(["approval", "problem", "budget"]);
+const IMPORTANT: ReadonlySet<InboxKind> = new Set(["approval", "question", "problem", "budget"]);
 /** More than this many items for one person in one pass become a single summary push. */
 const SUMMARY_AFTER = 3;
 const STALE_SENDING_MS = 5 * 60_000;
@@ -525,6 +525,7 @@ function pushPayload(item: InboxItemDto, url: string) {
 
 const KIND_WORDS: Record<InboxKind, [string, string]> = {
   approval: ["approval waiting", "approvals waiting"],
+  question: ["question from an agent", "questions from agents"],
   result: ["result", "results"],
   problem: ["problem", "problems"],
   budget: ["budget alert", "budget alerts"],
@@ -534,7 +535,7 @@ function summarize(items: InboxItemDto[]): string {
   const counts = new Map<InboxKind, number>();
   for (const i of items) counts.set(i.kind, (counts.get(i.kind) ?? 0) + 1);
   // What needs you comes first.
-  const order: InboxKind[] = ["approval", "problem", "budget", "result"];
+  const order: InboxKind[] = ["approval", "question", "problem", "budget", "result"];
   return order.filter((k) => counts.has(k)).map((k) => `${counts.get(k)} ${KIND_WORDS[k][counts.get(k) === 1 ? 0 : 1]}`).join(", ");
 }
 

@@ -13,6 +13,8 @@ export interface RunRow {
   depth: number;
   /** Loop state by the step that ends each loop (WF-010). */
   loops?: Record<string, { round: number; previous: string }>;
+  /** Limits inherited from the workspaces above this task (SRS 4.12). */
+  inherited?: { rules?: { effect: "allow" | "ask" | "deny"; connectionId: string; tool: string | null; source: string }[] } | null;
   title: string;
   brief: Record<string, string>;
   workflow: WorkflowDefinition;
@@ -42,6 +44,7 @@ export interface StepRow {
   output: string | null;
   error: string | null;
   error_code: string | null;
+  idempotency_key?: string | null;
   feedback: string | null;
   tokens_in: number;
   tokens_out: number;
@@ -50,6 +53,7 @@ export interface StepRow {
   latency_ms: number | null;
   retry_at: Date | null;
   round?: number;
+  policy?: { effect: "allow" | "ask" | "deny"; allowed: boolean; source: string | null; reason: string } | null;
   created_at: Date;
   started_at: Date | null;
   finished_at: Date | null;
@@ -90,6 +94,25 @@ export function toStepDto(row: StepRow): StepDto {
     startedAt: iso(row.started_at),
     finishedAt: iso(row.finished_at),
     round: row.round ?? 1,
+    ...externalFields(row),
+  };
+}
+
+/** What agent and automation steps show while they wait (SRS 4.11). */
+function externalFields(row: StepRow): Pick<StepDto, "progress" | "question" | "externalId"> {
+  if ((row.kind !== "agent" && row.kind !== "automation") || !row.input) return {};
+  const input = row.input as {
+    progress?: string[];
+    asking?: string;
+    question?: string;
+    handle?: { externalRunId?: string };
+    execution?: { executionId?: string };
+  };
+  const externalId = input.handle?.externalRunId ?? input.execution?.executionId;
+  return {
+    ...(input.progress?.length ? { progress: input.progress } : {}),
+    ...(input.asking && input.question && row.status === "waiting" ? { question: { approvalId: input.asking, prompt: input.question } } : {}),
+    ...(externalId ? { externalId: String(externalId) } : {}),
   };
 }
 

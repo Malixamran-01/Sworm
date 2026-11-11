@@ -10,6 +10,7 @@ import { useWorkspace } from "../WorkspaceLayout";
 import { Button, cx, ErrorNote, StatusPill } from "../../../ui";
 import { CheckIcon, ChevronIcon, CloseIcon } from "../../../ui/icons";
 import { ApprovalPanel } from "../../inbox/ApprovalActions";
+import { QuestionPanel } from "../../inbox/QuestionPanel";
 
 function StepMarker({ step, n }: { step: StepDto; n: number }) {
   const base = "flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full text-xs font-bold";
@@ -26,6 +27,9 @@ function StepRow({ run, step, n }: { run: RunDetailDto; step: StepDto; n: number
   const live = useDelta(run.id, step.key);
   const [open, setOpen] = useState(step.status === "running");
   const text = step.status === "running" ? live : step.output;
+  // Agents and outside workflows report progress while they wait (SRS 4.11).
+  const outside = step.kind === "agent" || step.kind === "automation";
+  const working = outside && step.status === "waiting";
   const role = step.nodeLabel?.split(" · ")[0];
   const node = step.nodeLabel?.split(" · ").slice(1).join(" · ");
   const highlight = step.status === "waiting" || step.status === "running";
@@ -36,7 +40,7 @@ function StepRow({ run, step, n }: { run: RunDetailDto; step: StepDto; n: number
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        disabled={!text && !step.error}
+        disabled={!text && !step.error && !working}
         className="flex w-full items-center gap-2.5 py-2 text-left disabled:cursor-default"
       >
         <StepMarker step={step} n={n} />
@@ -44,12 +48,13 @@ function StepRow({ run, step, n }: { run: RunDetailDto; step: StepDto; n: number
           <strong>{step.kind === "approval" ? "Review" : stepLabel(step.key)}</strong>
           <span className="text-muted">
             {step.kind === "approval" ? " · you" : role ? ` · ${role}${node ? ` (${node})` : ""}` : ""}
+            {working ? (step.question ? " · asking you" : " · working outside") : ""}
             {step.round > 1 ? ` · round ${step.round}` : ""}
             {step.attempt > 1 && step.round <= 1 ? ` · attempt ${step.attempt}` : ""}
           </span>
         </span>
         <span className="text-xs text-muted">{step.status === "not_taken" ? "not taken" : step.status === "skipped" ? "skipped" : step.kind !== "approval" && step.status === "succeeded" ? money(step.costUsd) : step.kind === "approval" ? "" : "—"}</span>
-        {text || step.error ? <ChevronIcon open={open} /> : <span className="w-3.5" />}
+        {text || step.error || working ? <ChevronIcon open={open} /> : <span className="w-3.5" />}
       </button>
       {step.children?.length ? (
         // Sub-tasks a workspace step started (WF-008); each opens in its own workspace.
@@ -65,11 +70,19 @@ function StepRow({ run, step, n }: { run: RunDetailDto; step: StepDto; n: number
           ))}
         </ul>
       ) : null}
+      {outside && step.progress?.length && (open || working) ? (
+        <ol className="m-0 mb-2 ml-8 flex list-none flex-col gap-0.5 border-l-2 border-line-soft p-0 pl-3 text-[13px] text-ink-2" aria-label={`Progress of ${stepLabel(step.key)}`}>
+          {(open ? step.progress : step.progress.slice(-3)).map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ol>
+      ) : null}
+      {open && outside && step.externalId ? <p className="m-0 mb-2 ml-8 text-xs text-muted">Outside id: <code>{step.externalId}</code></p> : null}
       {open && step.error ? <p className="m-0 mb-2 ml-8 text-[13px] text-bad">{step.error}</p> : null}
       {open && text ? (
         <div className="output-text mb-2 ml-8 max-h-80 overflow-y-auto rounded-[10px] border border-line-soft bg-surface p-3">
           {text}
-          {step.kind === "role" && step.status === "succeeded" ? (
+          {(step.kind === "role" || (outside && step.inputTokens + step.outputTokens > 0)) && step.status === "succeeded" ? (
             <p className="m-0 mt-2 border-t border-line-soft pt-2 text-xs text-muted">
               {step.inputTokens.toLocaleString()} in · {step.outputTokens.toLocaleString()} out · {money(step.costUsd)} {step.costSource}
               {step.latencyMs ? ` · ${(step.latencyMs / 1000).toFixed(1)} s` : ""}
@@ -96,7 +109,8 @@ export function TaskPanel({ taskId }: { taskId: string }) {
   if (task.error || !task.data) return <ErrorNote error={task.error ?? new Error("Task not found.")} />;
   const run = task.data;
   const approvalId = inbox.data?.find((i) => i.runId === run.id && i.kind === "approval" && !i.resolved)?.approvalId ?? null;
-  const waitingStep = run.steps.find((s) => s.status === "waiting");
+  const waitingStep = run.steps.find((s) => s.status === "waiting" && s.kind === "approval");
+  const asking = run.steps.filter((s) => s.status === "waiting" && s.question);
   const active = ["queued", "running", "waiting"].includes(run.status);
   // Show the live attempt of each step; revised ones collapse behind it.
   const latest = new Map<string, StepDto>();
@@ -134,6 +148,14 @@ export function TaskPanel({ taskId }: { taskId: string }) {
         </div>
       ) : null}
 
+      {asking.map((s) => (
+        <div key={s.id} className="flex flex-col gap-3 rounded-xl border border-warn-line bg-warn-row p-3.5">
+          <span className="text-[13px] font-semibold text-warn-ink">{s.nodeLabel?.split(" · ")[0] ?? stepLabel(s.key)} asks</span>
+          <div className="output-text max-h-60 overflow-y-auto rounded-[10px] bg-surface p-3">{s.question!.prompt}</div>
+          <QuestionPanel approvalId={s.question!.approvalId} runId={run.id} canAnswer={canDecide} />
+        </div>
+      ))}
+
       {run.status === "succeeded" && run.output ? (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
@@ -146,7 +168,13 @@ export function TaskPanel({ taskId }: { taskId: string }) {
         </div>
       ) : null}
 
-      <h3 className="m-0 mt-1 text-sm font-semibold">Steps</h3>
+      <div className="mt-1 flex items-center justify-between">
+        <h3 className="m-0 text-sm font-semibold">Steps</h3>
+        {/* The whole tree, sub-tasks and outside systems included, on one timeline. */}
+        <Link to={`/workspaces/${run.workspaceId}/tasks/${run.id}/trace`} className="text-xs font-semibold text-accent-ink no-underline hover:underline">
+          Open trace
+        </Link>
+      </div>
       <ol className="m-0 flex list-none flex-col gap-0.5 p-0">
         {[...latest.values()].map((s, i) => (
           <StepRow key={s.id} run={run} step={s} n={i + 1} />

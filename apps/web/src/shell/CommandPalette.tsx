@@ -27,6 +27,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { id: "home", label: "Home", hint: "Go to", run: go("/") },
       { id: "inbox", label: "Inbox", hint: "Go to", run: go("/inbox") },
       { id: "connections", label: "Connections", hint: "Go to", run: go("/connections") },
+      { id: "insights", label: "Insights: spend, reliability and audit trail", hint: "Go to", run: go("/insights") },
       { id: "new-ws", label: "Create a workspace", hint: "Action", run: go("/workspaces/new") },
       { id: "add-conn", label: "Add a connection", hint: "Action", run: go("/connections") },
       { id: "light", label: "Use light theme", hint: "Theme", run: () => setTheme("light") },

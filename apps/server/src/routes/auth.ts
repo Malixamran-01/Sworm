@@ -3,10 +3,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { param, principal, RateLimiter, SESSION_COOKIE } from "../auth/guard";
 import type { IdentityProviders } from "../auth/oidc";
+import type { SamlSignIn } from "../auth/saml";
 
 export interface AuthRouteOptions {
   conclave: Conclave;
   providers: IdentityProviders;
+  saml: SamlSignIn | null;
   secureCookies: boolean;
   /** Required to set up an instance that listens beyond localhost. */
   setupCode: string | null;
@@ -16,7 +18,7 @@ const PUBLIC = { guard: { auth: "public" as const } };
 const USER = { guard: { auth: "user" as const } };
 
 export function authRoutes(app: FastifyInstance, opts: AuthRouteOptions) {
-  const { conclave, providers } = opts;
+  const { conclave, providers, saml } = opts;
   const limiter = new RateLimiter(10, 5 * 60_000);
   const meta = (req: FastifyRequest) => ({ userAgent: req.headers["user-agent"], ip: req.ip });
 
@@ -37,7 +39,7 @@ export function authRoutes(app: FastifyInstance, opts: AuthRouteOptions) {
   app.get("/v1/auth/state", { config: PUBLIC }, async (req) => ({
     setupRequired: await conclave.accounts.setupRequired(),
     setupCodeRequired: !!opts.setupCode,
-    providers: providers.list(),
+    providers: [...providers.list(), ...(saml ? [saml.provider()] : [])],
     me: req.principal ? await conclave.accounts.me(req.principal) : null,
   }));
 
@@ -112,6 +114,51 @@ export function authRoutes(app: FastifyInstance, opts: AuthRouteOptions) {
       return reply.redirect(`/sign-in?error=${encodeURIComponent(message)}`);
     }
   });
+
+  // SAML (ACC-001). The IdP posts its reply as a form from its own site, so only this
+  // route takes form bodies; everywhere else a cross-site form still cannot sign anyone in.
+  // Its own limits: a sign-in is two requests, and a whole office may share one IP.
+  const samlLimiter = new RateLimiter(60, 5 * 60_000);
+  const failed = (reply: FastifyReply, err: unknown) => {
+    const message = err instanceof ConclaveError ? (err.detail ?? err.title) : err instanceof Error ? err.message : String(err);
+    return reply.code(303).redirect(`/sign-in?error=${encodeURIComponent(message)}`);
+  };
+  app.get("/v1/auth/saml/metadata", { config: PUBLIC }, async (_req, reply) => {
+    if (!saml) throw new ConclaveError(404, "SAML is not set up on this instance");
+    return reply.type("application/samlmetadata+xml").send(saml.metadata());
+  });
+  app.get("/v1/auth/saml/start", { config: PUBLIC }, async (req, reply) => {
+    try {
+      if (!saml) throw new Error("SAML sign-in is not set up on this instance.");
+      samlLimiter.check(`saml-start:${req.ip}`);
+      return reply.redirect(await saml.start());
+    } catch (err) {
+      return failed(reply, err);
+    }
+  });
+  void app.register(async (scope) => {
+    scope.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string", bodyLimit: 512 * 1024 }, (_req, body, done) => {
+      done(null, Object.fromEntries(new URLSearchParams(String(body))));
+    });
+    scope.post("/v1/auth/saml/acs", { config: PUBLIC }, async (req, reply) => {
+      try {
+        if (!saml) throw new Error("SAML sign-in is not set up on this instance.");
+        samlLimiter.check(`saml-acs:${req.ip}`);
+        const identity = await saml.finish((req.body ?? {}) as { SAMLResponse?: string });
+        setCookie(reply, (await conclave.accounts.signInWithIdentity(identity, meta(req))).token);
+        // 303 so the browser follows with a GET, which carries the new (SameSite=Lax) cookie.
+        return reply.code(303).redirect("/");
+      } catch (err) {
+        return failed(reply, err);
+      }
+    });
+  });
+
+  // Owners see how single sign-on is set up, to hand the right values to the IdP.
+  app.get("/v1/org/sso", { config: { guard: { auth: "user" as const, perm: "org:manage" as const } } }, async () => ({
+    saml: saml ? saml.summary() : null,
+    oidc: providers.list().map((p) => ({ id: p.id, name: p.name, callbackUrl: providers.callbackUrl(p.id) })),
+  }));
 
   // ------------------------------------------------------- the caller's account
   app.get("/v1/me", { config: USER }, async (req) => conclave.accounts.me(principal(req)));

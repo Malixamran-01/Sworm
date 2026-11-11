@@ -176,7 +176,8 @@ describe("workspace steps", () => {
     const a = await blank(h, "A");
     const b = await blank(h, "B");
     const call = (workspace: string) =>
-      tt("custom", [{ kind: "workspace", key: "call", workspace, taskType: "custom", inputs: { request: "{{input.request}}" }, optional: false, timeoutMs: 3_600_000 }]);
+      // Each level changes the brief, so only the depth limit can stop it.
+      tt("custom", [{ kind: "workspace", key: "call", workspace, taskType: "custom", inputs: { request: "{{input.request}}!" }, optional: false, timeoutMs: 3_600_000 }]);
     await h.conclave.workspaces.saveTaskType(h.actor, b.id, "custom", call(a.id));
     await h.conclave.workspaces.saveTaskType(h.actor, a.id, "custom", call(b.id));
 
@@ -190,6 +191,25 @@ describe("workspace steps", () => {
       [2, "failed"],
       [3, "failed"],
     ]);
+  });
+
+  it("stops two workspaces handing the same brief back and forth, long before the depth limit", async () => {
+    h = await harness();
+    const a = await blank(h, "A");
+    const b = await blank(h, "B");
+    const call = (workspace: string) =>
+      tt("custom", [{ kind: "workspace", key: "call", workspace, taskType: "custom", inputs: { request: "{{input.request}}" }, optional: false, timeoutMs: 3_600_000 }]);
+    await h.conclave.workspaces.saveTaskType(h.actor, b.id, "custom", call(a.id));
+    await h.conclave.workspaces.saveTaskType(h.actor, a.id, "custom", call(b.id));
+
+    const run = await runToEnd(h, a.id, "custom", { request: "ping" });
+    expect(run.status).toBe("failed");
+    expect(run.error).toMatch(/would start "Custom" again with the same brief as a task above it/);
+    // A started B; B was refused when it tried to start A again.
+    const runs = await h.conclave.db.query<{ depth: number }>(`select depth from runs order by depth`);
+    expect(runs.map((r) => r.depth)).toEqual([0, 1]);
+    const [refused] = await h.conclave.db.query<{ error_code: string }>(`select s.error_code from run_steps s join runs r on r.id = s.run_id where r.depth = 1`);
+    expect(refused!.error_code).toBe("loop_detected");
   });
 
   it("puts a sub-task's approval in the inbox with its full path, and carries on after it", async () => {

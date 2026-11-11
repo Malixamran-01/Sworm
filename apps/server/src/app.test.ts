@@ -179,7 +179,7 @@ describe("Sign-in", () => {
     await api("POST", "/v1/org/invites", { email: "gia@example.com", role: "runner" });
 
     const state = await api<{ providers: { id: string }[] }>("GET", "/v1/auth/state", undefined, {});
-    expect(state.body.providers).toEqual([{ id: "test", name: "Test IdP" }]);
+    expect(state.body.providers).toEqual([{ id: "test", name: "Test IdP", startUrl: "/v1/auth/oidc/test/start" }]);
 
     const start = await app.inject({ method: "GET", url: "/v1/auth/oidc/test/start" });
     expect(start.statusCode).toBe(302);

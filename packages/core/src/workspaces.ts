@@ -1,5 +1,6 @@
 import {
   newId,
+  portForStep,
   resolveNeeds,
   taskTypeTemplateSchema,
   upstreamOf,
@@ -411,7 +412,7 @@ export class Workspaces {
   async createRole(actor: Actor, workspaceId: string, input: RoleInput): Promise<WorkspaceDetailDto> {
     const name = input.name?.trim();
     if (!name) throw invalid(["A role needs a name."]);
-    if (input.port !== "model@1" && input.port !== "tool@1") throw invalid([`Unknown port "${String(input.port)}".`]);
+    if (!(input.port in PORT_WORDS)) throw invalid([`Unknown port "${String(input.port)}".`]);
     const key = input.key?.trim() || slug(name, "role");
     if (!/^[a-z][a-z0-9_]*$/.test(key)) throw invalid(["Role keys are lowercase letters, digits and underscores, starting with a letter."]);
     await this.db.tx(async (q) => {
@@ -486,11 +487,11 @@ export class Workspaces {
 
     for (const step of workflow.steps) {
       const name = stepName(step);
-      if (step.kind === "role" || step.kind === "tool" || step.kind === "classify") {
+      const port = portForStep(step);
+      if (port && "role" in step) {
         const role = roles.get(step.role);
-        const port = step.kind === "tool" ? "tool@1" : "model@1";
         if (!role) problems.push(`${name} calls role "${step.role}", which this workspace does not have.`);
-        else if (role.port !== port) problems.push(`${name} is a ${step.kind === "tool" ? "tool" : "model"} step, but ${role.name} is filled by a ${role.port === "tool@1" ? "tool" : "model"}.`);
+        else if (role.port !== port) problems.push(`${name} is ${PORT_WORDS[port]} step, but ${role.name} is filled by ${PORT_WORDS[role.port as keyof typeof PORT_WORDS] ?? role.port}.`);
       }
       // Templates may read the brief and steps that finish before this one.
       const before = new Set([...upstreamOf(workflow, step.key)].filter((k) => k !== step.key));
@@ -667,6 +668,8 @@ const slug = (name: string, fallback: string) =>
     .replace(/^(\d)/, "r_$1")
     .slice(0, 40) || fallback;
 
+const PORT_WORDS = { "model@1": "a model", "tool@1": "a tool", "agent@1": "an agent", "workflow@1": "an outside workflow", "knowledge@1": "a knowledge source" } as const;
+
 const stepName = (s: Step) => (s.kind === "approval" ? s.title : s.key.replace(/_/g, " "));
 
 /** Templates a step reads, for checking what it refers to. */
@@ -678,6 +681,12 @@ function templatesOf(s: Step): string[] {
       return [s.show];
     case "tool":
       return Object.values(s.args);
+    case "lookup":
+      return [s.query];
+    case "agent":
+      return [s.prompt, ...Object.values(s.data)];
+    case "automation":
+      return Object.values(s.inputs);
     case "workspace":
       return [...Object.values(s.inputs), ...(s.repeat?.mode === "each" ? [s.repeat.items] : [])];
     case "branch":

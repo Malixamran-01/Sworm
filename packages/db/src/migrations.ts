@@ -471,4 +471,71 @@ alter table runs add column loops jsonb not null default '{}';
 alter table run_steps add column round int not null default 1;
 `,
   },
+  {
+    id: "0007_external",
+    sql: `
+-- Agent and Workflow ports (SRS 4.11). A one-time callback URL per outside
+-- execution: only the token's hash is kept, and it works once.
+create table external_callbacks (
+  token_hash text primary key,
+  org_id uuid not null references orgs(id),
+  run_id uuid not null references runs(id) on delete cascade,
+  step_id uuid not null references run_steps(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  used_at timestamptz
+);
+-- The ports a dock found its module provides (remote, sidecar and bridge docks).
+alter table connections add column ports jsonb;
+alter table connections add column remote_manifest jsonb;
+
+-- Local Bridge (SRS 8.8): paired devices and pairings in progress.
+create table bridge_devices (
+  id uuid primary key,
+  org_id uuid not null references orgs(id),
+  user_id uuid not null references users(id),
+  name text not null,
+  public_key text not null,
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz,
+  revoked_at timestamptz
+);
+create table bridge_pairings (
+  id uuid primary key,
+  code_hash text not null unique,
+  name text not null,
+  public_key text not null,
+  org_id uuid,
+  user_id uuid,
+  device_id uuid,
+  expires_at timestamptz not null,
+  claimed_at timestamptz,
+  confirmed_at timestamptz,
+  created_at timestamptz not null default now()
+);
+`,
+  },
+  {
+    id: "0008_policies",
+    sql: `
+-- What tasks may use (SRS 4.12): a connection, or one tool on it, is allowed, needs a person first, or is never used.
+-- workspace_id null means the rule holds for the whole organisation.
+create table policies (
+  id uuid primary key,
+  org_id uuid not null references orgs(id),
+  workspace_id uuid references workspaces(id) on delete cascade,
+  connection_id uuid not null references connections(id) on delete cascade,
+  tool text,
+  effect text not null,
+  created_by uuid,
+  created_at timestamptz not null default now()
+);
+create index policies_scope on policies (org_id, workspace_id);
+-- The limits a sub-task inherits from the workspaces above it. They only ever narrow.
+alter table runs add column inherited jsonb not null default '{}';
+-- What the rules said about a step's call, kept for the trace.
+alter table run_steps add column policy jsonb;
+-- When a finished task's trace was sent to an OpenTelemetry collector, if one is set.
+alter table runs add column trace_exported_at timestamptz;
+`,
+  },
 ];

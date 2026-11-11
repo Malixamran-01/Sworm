@@ -130,13 +130,17 @@ export function Sidebar({ onOpenPalette, open = false, onClose }: { onOpenPalett
       <NavLink to="/connections" icon={<PlugIcon />}>
         Connections
       </NavLink>
-      <div className={cx(navItem, "cursor-default hover:bg-transparent hover:text-ink-2")} title="Spend across all workspaces this month">
-        <GaugeIcon />
-        <span className="flex-1">This month</span>
-        <span className="text-xs text-muted">
-          {moneyShort(spent)} / {moneyShort(budget)}
-        </span>
-      </div>
+      <NavLink
+        to="/insights"
+        icon={<GaugeIcon />}
+        end={
+          <span className="text-xs font-normal text-muted" title="Spent across all workspaces this month, of their budgets">
+            {moneyShort(spent)} / {moneyShort(budget)}
+          </span>
+        }
+      >
+        Insights
+      </NavLink>
 
       <NavLink to="/settings" icon={<GearIcon />}>
         Settings

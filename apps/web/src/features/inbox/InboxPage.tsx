@@ -8,10 +8,11 @@ import { ago } from "../../lib/format";
 import { initials, paletteFor } from "../../lib/palette";
 import { Button, cx, Empty, PageHeader, Tile } from "../../ui";
 import { ApprovalPanel, useDecide } from "./ApprovalActions";
+import { QuestionPanel } from "./QuestionPanel";
 
 type Filter = "all" | "needs" | "done" | "problems";
 
-const isNeeds = (i: InboxItemDto) => i.kind === "approval" && !i.resolved;
+const isNeeds = (i: InboxItemDto) => (i.kind === "approval" || i.kind === "question") && !i.resolved;
 const isProblem = (i: InboxItemDto) => i.kind === "problem" || i.kind === "budget";
 
 function Row({ item, first }: { item: InboxItemDto; first: boolean }) {
@@ -46,7 +47,9 @@ function Row({ item, first }: { item: InboxItemDto; first: boolean }) {
             {item.path || item.workspaceName} · {ago(item.createdAt)}
           </span>
         </span>
-        {isNeeds(item) && item.approvalId && canDecide ? (
+        {item.kind === "question" && !item.resolved ? (
+          openLink("Open", taskLink)
+        ) : isNeeds(item) && item.approvalId && canDecide ? (
           <>
             {openLink("Open", taskLink)}
             <Button size="sm" className="!h-[34px]" onClick={() => setChanging((c) => !c)} aria-expanded={changing}>
@@ -63,6 +66,11 @@ function Row({ item, first }: { item: InboxItemDto; first: boolean }) {
         )}
       </div>
       {isNeeds(item) && item.body ? <p className="output-text m-0 ml-[60px] line-clamp-4 rounded-[10px] bg-sunken p-3 text-ink-2">{item.body}</p> : null}
+      {item.kind === "question" && !item.resolved && item.approvalId ? (
+        <div className="ml-[60px]">
+          <QuestionPanel approvalId={item.approvalId} runId={item.runId} canAnswer={canDecide} layout="row" />
+        </div>
+      ) : null}
       {changing && item.approvalId ? (
         <div className="ml-[60px]">
           <ApprovalPanel approvalId={item.approvalId} runId={item.runId} layout="row" />
@@ -81,7 +89,7 @@ export function InboxPage() {
   const all = (inbox.data ?? []).filter((i) => !ws || i.workspaceId === ws);
   const counts = { all: all.length, needs: all.filter(isNeeds).length, done: all.filter((i) => i.kind === "result").length, problems: all.filter(isProblem).length };
   const items = all.filter((i) => filter === "all" || (filter === "needs" ? isNeeds(i) : filter === "done" ? i.kind === "result" : isProblem(i)));
-  const unread = all.filter((i) => !i.readAt && !i.resolved && i.kind !== "approval");
+  const unread = all.filter((i) => !i.readAt && !i.resolved && i.kind !== "approval" && i.kind !== "question");
   const markAll = useMutation({
     mutationFn: () => Promise.all(unread.map((i) => api.markRead(i.id))),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["inbox"] }),

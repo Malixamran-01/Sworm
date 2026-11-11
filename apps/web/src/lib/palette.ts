@@ -44,4 +44,5 @@ export const PORT_GROUPS: Record<string, string> = {
   device: "Devices",
   storage: "Storage",
   media: "Image, video & voice",
+  module: "Modules (remote, sidecar, Local Bridge)",
 };

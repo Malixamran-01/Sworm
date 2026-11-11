@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { ConnectionsPage } from "./features/connections/ConnectionsPage";
 import { HomePage } from "./features/home/HomePage";
 import { InboxPage } from "./features/inbox/InboxPage";
+import { InsightsPage } from "./features/insights/InsightsPage";
+import { TracePage } from "./features/workspaces/tasks/TracePage";
 import { ActivityTab } from "./features/workspaces/activity/ActivityTab";
 import { LibraryTab } from "./features/workspaces/library/LibraryTab";
 import { NewWorkspacePage } from "./features/workspaces/NewWorkspacePage";
@@ -31,6 +33,7 @@ const routeTree = root.addChildren([
   createRoute({ getParentRoute: () => root, path: "/", component: HomePage }),
   createRoute({ getParentRoute: () => root, path: "/inbox", component: InboxPage }),
   createRoute({ getParentRoute: () => root, path: "/connections", component: ConnectionsPage }),
+  createRoute({ getParentRoute: () => root, path: "/insights", component: InsightsPage }),
   createRoute({ getParentRoute: () => root, path: "/workspaces/new", component: NewWorkspacePage }),
   createRoute({ getParentRoute: () => root, path: "/settings", component: SettingsPage }),
   // Signed-in visitors to these land on Home; the auth gate shows them otherwise.
@@ -39,6 +42,7 @@ const routeTree = root.addChildren([
   workspace.addChildren([
     createRoute({ getParentRoute: () => workspace, path: "/", component: TasksTab }),
     createRoute({ getParentRoute: () => workspace, path: "/tasks/$taskId", component: TasksTab }),
+    createRoute({ getParentRoute: () => workspace, path: "/tasks/$taskId/trace", component: TracePage }),
     createRoute({ getParentRoute: () => workspace, path: "/team", component: TeamTab }),
     createRoute({ getParentRoute: () => workspace, path: "/workflows", component: WorkflowsTab }),
     createRoute({ getParentRoute: () => workspace, path: "/workflows/$key", component: WorkflowEditor }),

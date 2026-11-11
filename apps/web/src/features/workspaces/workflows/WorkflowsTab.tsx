@@ -21,7 +21,10 @@ export function WorkflowsTab() {
   const detail = (s: Step, ttKey: string): string => {
     if (s.kind === "approval") return s.revises.length ? `Approve, or ask for changes and only ${s.revises.join(", ")} re-runs.` : "Approve or reject.";
     if (s.kind === "tool") return `Calls the tool chosen for ${roleName(s.role)} with ${Object.keys(s.args).join(", ") || "no arguments"}${s.optional ? " · skipped when no tool is connected" : ""}`;
+    if (s.kind === "lookup") return `Looks up to ${s.limit} passages in the source chosen for ${roleName(s.role)}${s.optional ? " · skipped when no source is connected" : ""}`;
     if (s.kind === "workspace") return describeCall(w, s, ttKey, targets.data);
+    if (s.kind === "agent") return `Hands the task to the agent filling ${roleName(s.role)} and waits up to ${Math.round(s.timeoutMs / 60000)} min${s.onQuestion === "ask" ? "; its questions come to the inbox" : ""}.`;
+    if (s.kind === "automation") return `Starts the workflow chosen for ${roleName(s.role)} with ${Object.keys(s.inputs).join(", ") || "no inputs"} and waits for its result.`;
     if (s.kind === "branch") return `Takes the ${s.mode === "all" ? "matching cases" : "first matching case"} of ${s.cases.map((c) => c.label).join(", ")}, else Else.`;
     if (s.kind === "classify") return `${roleName(s.role)} sorts it into ${s.categories.map((c) => c.label).join(", ")}${s.other ? " or Other" : ""}.`;
     if (s.kind === "merge") return s.mode === "first" ? "Passes on whichever branch ran." : s.mode === "concat" ? "Joins every input." : "Collects every input as JSON.";

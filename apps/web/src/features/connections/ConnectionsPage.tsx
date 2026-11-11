@@ -1,14 +1,20 @@
-import type { ConnectionDto, ConnectionTestDto, ModuleDto } from "@conclave/contract";
+import type { ConnectionDto, ConnectionTestDto, ModuleDto, PolicyEffect } from "@conclave/contract";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { useCan } from "../../lib/auth";
 import { money } from "../../lib/format";
 import { moduleLook, PORT_GROUPS } from "../../lib/palette";
-import { Button, Card, cx, ErrorNote, Field, Input, PageHeader, Select, StatusPill, Tile } from "../../ui";
+import { InstallModule } from "./InstallModule";
+import { Button, Card, cx, ErrorNote, Field, Input, PageHeader, Pill, Select, StatusPill, Tile } from "../../ui";
 
 const DISABLED = "Disabled by the kill switch.";
-const portOf = (m: ModuleDto | undefined) => m?.ports[0]?.split("@")[0] ?? "tool";
+const ADD_LABEL: Record<string, string> = { model: "a language model", agent: "an agent", workflow: "a workflow engine", tool: "a tool", module: "a module" };
+/** Docks run any module, so they group as modules; other modules by their first port. */
+const DOCKS = new Set(["remote", "sidecar", "bridge"]);
+const portOf = (m: ModuleDto | undefined) => (m && DOCKS.has(m.docks[0] ?? "") ? "module" : (m?.ports[0]?.split("@")[0] ?? "tool"));
+/** A connection groups by what it provides: a dock's by the ports its module said it has. */
+const groupOf = (c: ConnectionDto, m: ModuleDto | undefined) => (c.docked ? (c.ports[0]?.split("@")[0] ?? "module") : portOf(m));
 
 function ConnectionCard({ c, mod }: { c: ConnectionDto; mod: ModuleDto | undefined }) {
   const qc = useQueryClient();
@@ -18,6 +24,14 @@ function ConnectionCard({ c, mod }: { c: ConnectionDto; mod: ModuleDto | undefin
   const toggle = useMutation({ mutationFn: () => api.setConnectionDisabled(c.id, !off), onSettled: refresh });
   const remove = useMutation({ mutationFn: () => api.deleteConnection(c.id), onSettled: refresh });
   const look = moduleLook(c.moduleId, mod?.name ?? c.name);
+  // The organisation's rule for this connection holds in every workspace (SRS 4.12).
+  const canGovern = useCan("org:manage");
+  const orgRules = useQuery({ queryKey: ["org-policies"], queryFn: api.orgPolicies });
+  const orgEffect: PolicyEffect = orgRules.data?.find((r) => r.connectionId === c.id && r.tool === null)?.effect ?? "allow";
+  const govern = useMutation({
+    mutationFn: (effect: PolicyEffect) => api.setOrgPolicy({ connectionId: c.id, effect: effect === "allow" ? "default" : effect }),
+    onSuccess: (rules) => qc.setQueryData(["org-policies"], rules),
+  });
   const border = off ? "" : c.status === "rate_limited" ? "!border-warn-line" : c.status === "signed_out" || c.status === "unreachable" ? "!border-bad-line" : "";
 
   return (
@@ -27,6 +41,13 @@ function ConnectionCard({ c, mod }: { c: ConnectionDto; mod: ModuleDto | undefin
         <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{c.name}</span>
         <StatusPill status={off ? "off" : c.status} />
       </div>
+      {c.docked ? (
+        <span className="text-xs text-ink-2">
+          {c.docked.name} {c.docked.version} · {c.dock} dock · {c.docked.ports.map((p) => p.split("@")[0]).join(", ")}
+        </span>
+      ) : DOCKS.has(c.dock) ? (
+        <span className="text-xs text-muted">{c.dock} dock · test it to see what its module provides</span>
+      ) : null}
       <span className="text-xs text-muted">{c.usedBy.length ? c.usedBy.map((u) => u.workspaceName).join(", ") : "Not used by a workspace yet"}</span>
       {c.statusDetail && !off && c.status !== "working" ? <span className="text-xs text-bad">{c.statusDetail}</span> : null}
       <div className="flex items-center justify-between gap-2">
@@ -35,6 +56,26 @@ function ConnectionCard({ c, mod }: { c: ConnectionDto; mod: ModuleDto | undefin
         </span>
         {c.spendLimitUsd !== null ? <span className="text-xs text-muted">limit {money(c.spendLimitUsd)}</span> : null}
       </div>
+      {canGovern || orgEffect !== "allow" ? (
+        <label className="flex items-center justify-between gap-2 text-xs text-muted">
+          In every workspace
+          <select
+            aria-label={`Rule for ${c.name} in every workspace`}
+            value={orgEffect}
+            disabled={!canGovern || govern.isPending}
+            onChange={(e) => govern.mutate(e.target.value as PolicyEffect)}
+            className={cx(
+              "h-7 rounded-md border border-line-strong bg-surface px-1.5 text-xs",
+              orgEffect === "deny" ? "font-semibold text-bad" : orgEffect === "ask" ? "font-semibold text-warn-ink" : "text-ink-2",
+            )}
+          >
+            <option value="allow">Allowed</option>
+            <option value="ask">Ask a person first</option>
+            <option value="deny">Never used</option>
+          </select>
+        </label>
+      ) : null}
+      <ErrorNote error={govern.error} />
       <div className="mt-1 flex gap-3 border-t border-line-soft pt-2 text-xs font-semibold">
         <button type="button" className="text-accent-ink hover:underline disabled:opacity-50" disabled={test.isPending || off} onClick={() => test.mutate()}>
           {test.isPending ? "Testing…" : "Test"}
@@ -53,6 +94,33 @@ function ConnectionCard({ c, mod }: { c: ConnectionDto; mod: ModuleDto | undefin
         </button>
       </div>
     </Card>
+  );
+}
+
+/** What a module may do, from its manifest, shown before anything is saved (MOD-010). */
+function ModulePermissions({ mod }: { mod: ModuleDto }) {
+  const fieldLabel = (key: string) => mod.configFields.find((f) => f.key === key)?.label ?? key;
+  const reach = mod.permissions.egress.map((e) => {
+    const m = /^\{config\.([A-Za-z0-9_]+)(\[\])?\}$/.exec(e);
+    return m ? `the ${m[2] ? "hosts" : "host"} you enter in \u201c${fieldLabel(m[1]!)}\u201d` : e;
+  });
+  const docked = ["remote", "sidecar", "bridge"].includes(mod.docks[0] ?? "");
+  return (
+    <div className="flex flex-col gap-1 rounded-[10px] border border-line-soft bg-surface-2 px-3 py-2 text-xs text-ink-2">
+      <span className="flex flex-wrap items-center gap-1.5 font-semibold">
+        What this module may do
+        {mod.source === "installed" ? <Pill tone="warn">Added by your admin</Pill> : null}
+      </span>
+      <span>
+        <span className="text-muted">Reach: </span>
+        {reach.length ? reach.join(", ") : docked ? "what the module behind it declares, shown after the first test" : "nothing outside this server"}
+      </span>
+      <span>
+        <span className="text-muted">Secrets it reads: </span>
+        {mod.permissions.secrets.length ? mod.permissions.secrets.map(fieldLabel).join(", ") : "none"}
+        {mod.permissions.secrets.length ? ", of this connection only" : ""}
+      </span>
+    </div>
   );
 }
 
@@ -143,6 +211,7 @@ function AddConnection({ modules, focusRef }: { modules: ModuleDto[]; focusRef: 
             <p className="m-0 -mt-2 text-xs text-muted">
               {mod.description} <span className="whitespace-nowrap">({mod.ports.join(", ")} · {mod.docks[0]} dock)</span>
             </p>
+            <ModulePermissions mod={mod} />
             <Field label="Name" htmlFor="conn-name">
               <Input id="conn-name" value={name} onChange={(e) => setName(e.target.value)} required />
             </Field>
@@ -193,7 +262,7 @@ export function ConnectionsPage() {
   const groups = useMemo(() => {
     const map = new Map<string, ConnectionDto[]>();
     for (const c of connections.data ?? []) {
-      const g = portOf(byId.get(c.moduleId));
+      const g = groupOf(c, byId.get(c.moduleId));
       map.set(g, [...(map.get(g) ?? []), c]);
     }
     if (!map.has("model")) map.set("model", []);
@@ -218,13 +287,14 @@ export function ConnectionsPage() {
                 onClick={() => searchRef.current?.focus()}
                 className="min-h-[110px] rounded-[14px] border border-dashed border-line-dashed bg-transparent text-[13px] font-semibold text-ink-2 hover:border-accent hover:text-accent-ink"
               >
-                + Add {group === "model" ? "a language model" : `a ${(PORT_GROUPS[group] ?? group).toLowerCase()} connection`}
+                + Add {ADD_LABEL[group] ?? `a ${(PORT_GROUPS[group] ?? group).toLowerCase()} connection`}
               </button>) : null}
             </div>
           </section>
         ))}
+        <InstallModule />
         <p className="m-0 text-xs text-muted">
-          Agents, workflow engines, knowledge sources and devices appear here as their modules are installed.
+          Knowledge sources, channels and devices appear here as their modules are installed. Any module can also run on its own server, as a sidecar, or on a computer through the Local Bridge.
         </p>
       </main>
       {modules.data && canManage ? <AddConnection modules={modules.data} focusRef={searchRef} /> : null}

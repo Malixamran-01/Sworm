@@ -15,10 +15,13 @@ export {
   type SignInResult,
   type TokenDto,
 } from "./accounts";
-export { Connections, type ConnectionInput } from "./connections";
+export { audit, Connections, type ConnectionInput } from "./connections";
 export { ConclaveError, type Actor } from "./errors";
 export { EventBus, OutboxRelay } from "./events";
-export { ModuleRegistry, egressFetch, allowedHosts } from "./modules";
+export { Insights } from "./insights";
+export { OtelExporter, toOtlp, type OtelOptions } from "./otel";
+export { decide, Policies, type PolicyQuestion, type PolicyRule } from "./policies";
+export { ModuleRegistry, egressFetch, allowedHosts, toModuleDto } from "./modules";
 export { Orchestrator, type OrchestratorOptions } from "./orchestrator";
 export { SecretVault } from "./secrets";
 export { builtInTemplates, findTemplate } from "./templates";
@@ -28,3 +31,4 @@ export { render } from "./render";
 export { costOf, percentile, upperBound } from "./budget";
 export { DEFAULT_PUSH_HOSTS, inQuietHours, localClock, Notifier, smtpMailer, type DeliveryReport, type Mailer, type MailMessage, type NotifierOptions } from "./notifications";
 export { base32Decode, base32Encode, hotp, SecondFactors, totp, totpStep, type WebAuthnConfig } from "./mfa";
+export { bridgeSigningKey, Devices, remoteSigningKey, type DeviceDto } from "./devices";

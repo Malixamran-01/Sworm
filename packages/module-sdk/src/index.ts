@@ -2,6 +2,8 @@ import { NodeCallError, type ConnectionStatus, type PortImplementations, type Po
 import { manifestSchema, type ModuleManifest, type ModuleManifestInput } from "./manifest";
 
 export * from "./manifest";
+export * from "./cmp";
+export * from "./bridge-protocol";
 
 export interface ModuleLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -17,6 +19,8 @@ export interface ModuleContext {
   /** Egress-checked fetch. Modules must use it instead of the global fetch. */
   fetch: typeof fetch;
   log: ModuleLogger;
+  /** The connection this instance serves. Docks use it to keep to the connection's organisation. */
+  connection?: { id: string; orgId: string };
 }
 
 export interface HealthResult {
@@ -27,6 +31,19 @@ export interface HealthResult {
 export interface Capabilities {
   models?: { id: string; displayName?: string }[];
   tools?: { name: string }[];
+  skills?: { id: string; name?: string }[];
+  workflows?: { id: string; name?: string }[];
+  sources?: { id: string; name?: string }[];
+}
+
+/** What a dock found out about the module it runs (remote, sidecar and bridge docks). */
+export interface DockedModuleInfo {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  ports: string[];
+  permissions: { egress: string[]; secrets: string[] };
 }
 
 /** A live module instance, bound to one connection. */
@@ -36,6 +53,8 @@ export interface ModuleInstance {
   /** The outside system's version, when it reports one (CON-007). */
   outsideVersion?(signal?: AbortSignal): Promise<string | null>;
   discover?(signal?: AbortSignal): Promise<Capabilities>;
+  /** Docks only: the manifest of the module behind the dock. */
+  dockedModule?(signal?: AbortSignal): Promise<DockedModuleInfo>;
   close?(): Promise<void>;
 }
 

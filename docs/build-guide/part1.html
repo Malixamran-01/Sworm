@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Conclave: the complete build guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  * { box-sizing: border-box; }
+  html { font-family: "Segoe UI", "Inter", system-ui, sans-serif; font-size: 10pt; line-height: 1.5; color: #18191b; }
+  body { margin: 0; }
+  h1 { font-size: 30pt; line-height: 1.1; margin: 0 0 8pt; letter-spacing: -0.02em; }
+  h2 { font-size: 17pt; line-height: 1.2; margin: 0 0 8pt; letter-spacing: -0.01em; break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 14pt 0 4pt; break-after: avoid; }
+  h4 { font-size: 10pt; margin: 10pt 0 3pt; color: #1e44cc; text-transform: uppercase; letter-spacing: 0.05em; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 6pt; padding-left: 16pt; }
+  li { margin-bottom: 2.5pt; }
+  code, pre { font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace; font-size: 8.6pt; }
+  code { background: #f1f0ec; padding: 0.5pt 3pt; border-radius: 3pt; }
+  pre { background: #f6f5f2; border: 0.6pt solid #e4e2dc; border-radius: 5pt; padding: 7pt 9pt; margin: 4pt 0 8pt; white-space: pre-wrap; line-height: 1.4; break-inside: avoid; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 9pt; font-size: 9pt; }
+  th, td { border: 0.6pt solid #d6d3cc; padding: 3.5pt 6pt; text-align: left; vertical-align: top; }
+  th { background: #f1f0ec; font-weight: 600; }
+  tr { break-inside: avoid; }
+  .cover { height: 250mm; display: flex; flex-direction: column; justify-content: center; break-after: page; }
+  .cover .tag { color: #1e44cc; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-size: 9pt; margin-bottom: 10pt; }
+  .cover .sub { font-size: 13pt; color: #3a3c41; max-width: 150mm; margin-bottom: 22pt; }
+  .cover .facts { display: flex; gap: 8pt; flex-wrap: wrap; }
+  .cover .facts div { border: 0.6pt solid #d6d3cc; border-radius: 6pt; padding: 7pt 10pt; min-width: 38mm; }
+  .cover .facts b { display: block; font-size: 15pt; }
+  .cover .facts span { color: #5c5f66; font-size: 8.5pt; }
+  .part { break-before: page; border-top: 3pt solid #2e5bff; padding-top: 10pt; margin-bottom: 12pt; }
+  .part .k { color: #1e44cc; font-weight: 700; font-size: 9pt; letter-spacing: 0.08em; text-transform: uppercase; }
+  .part h2 { font-size: 22pt; margin-top: 2pt; }
+  .stage { margin-top: 16pt; padding-top: 10pt; border-top: 0.8pt solid #d6d3cc; }
+  .stage > h2 .n { display: inline-block; background: #2e5bff; color: #fff; font-size: 8.5pt; font-weight: 700; border-radius: 4pt; padding: 1.5pt 6pt; margin-right: 6pt; vertical-align: 3pt; letter-spacing: 0.04em; }
+  .goal { background: #eef1ff; border-left: 3pt solid #2e5bff; padding: 6pt 9pt; margin: 4pt 0 8pt; border-radius: 0 5pt 5pt 0; break-inside: avoid; }
+  .done { background: #e3f3ea; border-left: 3pt solid #1f7a4c; padding: 6pt 9pt; margin: 6pt 0 4pt; border-radius: 0 5pt 5pt 0; break-inside: avoid; }
+  .warn { background: #fff3d6; border-left: 3pt solid #d99a1e; padding: 6pt 9pt; margin: 6pt 0; border-radius: 0 5pt 5pt 0; break-inside: avoid; }
+  .new { display: inline-block; background: #fff3d6; color: #8a5a00; font-size: 7.5pt; font-weight: 700; border-radius: 3pt; padding: 0.5pt 4pt; vertical-align: 1pt; }
+  .have { display: inline-block; background: #e3f3ea; color: #1f7a4c; font-size: 7.5pt; font-weight: 700; border-radius: 3pt; padding: 0.5pt 4pt; vertical-align: 1pt; }
+  .meta { display: grid; grid-template-columns: 26mm 1fr; gap: 2pt 8pt; font-size: 9pt; margin-bottom: 6pt; }
+  .meta dt { color: #5c5f66; font-weight: 600; }
+  .meta dd { margin: 0; }
+  .layers { display: flex; flex-direction: column; gap: 4pt; margin: 6pt 0 10pt; break-inside: avoid; }
+  .layer { border: 0.8pt solid #d6d3cc; border-radius: 6pt; padding: 6pt 9pt; }
+  .layer b { display: block; font-size: 9.5pt; }
+  .layer span { color: #5c5f66; font-size: 8.6pt; }
+  .layer.core { background: #eef1ff; border-color: #2e5bff; }
+  .row { display: flex; gap: 4pt; }
+  .row .layer { flex: 1; }
+  .toc { columns: 2; column-gap: 14pt; font-size: 9.3pt; }
+  .toc div { break-inside: avoid; margin-bottom: 2pt; }
+  .toc .h { font-weight: 700; margin-top: 6pt; }
+  .small { font-size: 8.8pt; color: #3a3c41; }
+  .two { columns: 2; column-gap: 14pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="tag">Build guide</div>
+  <h1>Conclave, built<br>module by module</h1>
+  <p class="sub">The full sequence for building the control plane where models, agents, workflow engines and tools work as one governed team: every package, connection, library, design technique and screen, in the order to build them, followed by what to build next.</p>
+  <div class="facts">
+    <div><b>30</b><span>build stages, in order</span></div>
+    <div><b>5</b><span>core packages</span></div>
+    <div><b>13</b><span>modules and docks</span></div>
+    <div><b>3</b><span>apps: server, web, bridge</span></div>
+  </div>
+  <p class="small" style="margin-top:22pt">Written against the repository as it stands on 10 November 2026. Stages 1 to 29 describe what exists and how to rebuild it. The rest of Part D is what to build next; rows already built are marked <span class="have">IN REPO</span>.</p>
+</div>
+
+<h2>Contents</h2>
+<div class="toc">
+  <div class="h">Part A · Before you start</div>
+  <div>A1 What Conclave is, and what makes it different</div>
+  <div>A2 The vocabulary you must keep straight</div>
+  <div>A3 Architecture in one page</div>
+  <div>A4 Design techniques used everywhere</div>
+  <div>A5 Rules for every stage</div>
+  <div class="h">Part B · Foundation</div>
+  <div>Stage 1 Monorepo and toolchain</div>
+  <div>Stage 2 Contract package</div>
+  <div>Stage 3 Database layer</div>
+  <div>Stage 4 Durable execution engine</div>
+  <div>Stage 5 Module SDK and conformance kit</div>
+  <div>Stage 6 Secret vault</div>
+  <div>Stage 7 Accounts, roles and access</div>
+  <div>Stage 8 Module registry and connections</div>
+  <div>Stage 9 First modules: mock, OpenAI-compatible, Anthropic</div>
+  <div>Stage 10 Workspaces, templates and versions</div>
+  <div>Stage 11 Budgets and the usage ledger</div>
+  <div>Stage 12 Orchestrator: runs, steps, approvals</div>
+  <div>Stage 13 Events, outbox and realtime</div>
+  <div>Stage 14 Inbox and notifications</div>
+  <div>Stage 15 API server</div>
+  <div>Stage 16 Web app: shell and core screens</div>
+  <div class="h">Part C · Composition and interoperability</div>
+  <div>Stage 17 Node editor</div>
+  <div>Stage 18 Tool port and the MCP dock</div>
+  <div>Stage 19 Branching, connectors and loops</div>
+  <div>Stage 20 Workspace steps (sub-tasks)</div>
+  <div>Stage 21 Agent and Workflow ports</div>
+  <div>Stage 22 Module protocol and the docks</div>
+  <div>Stage 23 Local Bridge</div>
+  <div>Stage 24 A2A dock</div>
+  <div>Stage 25 Installed modules</div>
+  <div>Stage 26 Trace</div>
+  <div>Stage 27 Insights and the audit trail</div>
+  <div>Stage 28 Tests, CI, accessibility, packaging</div>
+  <div class="h">Part D · What to build next</div>
+  <div>Stage 29 Governance across nested calls</div>
+  <div>Stage 30 The remaining roadmap, in order</div>
+  <div>D3 UI improvements still needed</div>
+  <div>D4 Gates: how to know it works</div>
+  <div class="h">Appendices</div>
+  <div>X1 Every library and why</div>
+  <div>X2 Database tables</div>
+  <div>X3 API routes</div>
+  <div>X4 Settings</div>
+  <div>X5 Build checklist</div>
+</div>
+
+<!-- ===================================================== PART A -->
+<div class="part"><div class="k">Part A</div><h2>Before you start</h2></div>
+
+<h3>A1 · What Conclave is, and what makes it different</h3>
+<p>Conclave is a control plane. It does not try to be the model, the agent or the workflow engine. It connects systems that already exist, lets a person compose them into larger tasks, and governs and records the whole run from one place.</p>
+<p>The promise to build towards: <b>connect anything that can do work, expose data or raise an event; compose those capabilities into larger systems; control, observe and govern the whole execution from one place.</b></p>
+<p>The six kinds of user in the specification (creator, researcher, developer, operations team and so on) are examples and templates. They are not architecture. One set of primitives serves all of them.</p>
+<table>
+  <tr><th style="width:27%">Existing product type</th><th>What it already does well</th><th>What Conclave does instead</th></tr>
+  <tr><td>Agent organisers (Paperclip and similar)</td><td>Agents as employees: roles, delegation, budgets, approvals</td><td>Agents are one kind of node among models, tools, workflow engines and, later, knowledge and devices, all behind one call contract</td></tr>
+  <tr><td>AI app builders (Dify and similar)</td><td>Visual workflows, knowledge pipelines, plugins, publishing, inside their own runtime</td><td>Orchestrates outside systems where they already run</td></tr>
+  <tr><td>Durable execution (Temporal)</td><td>Retries, timers, child workflows, signals, recovery</td><td>Sits above it. The engine is behind an interface; do not rebuild Temporal</td></tr>
+  <tr><td>Automation tools (n8n, Zapier, Make)</td><td>Integrations, triggers, branching</td><td>Each is a Workflow-port node, called through a webhook dock</td></tr>
+  <tr><td>MCP and A2A</td><td>Standard access to tools; standard talk between agents</td><td>Adapters into ports. Never compete with them</td></tr>
+</table>
+<p>"We connect anything" is therefore not enough. The difference is five things together:</p>
+<ol>
+  <li><b>Capability-level interoperability</b>: unlike systems fit one typed port each.</li>
+  <li><b>One invocation and execution model</b>: the same envelope, errors, retries and events for every system.</li>
+  <li><b>Limits that hold across nested calls</b>: permissions and budgets only ever narrow as work is delegated.</li>
+  <li><b>One history</b>: a single trace and a single ledger for a run that crosses systems and workspaces.</li>
+  <li><b>Portable workspaces</b>: a composition can be exported, imported and reused.</li>
+</ol>
+
+<h3>A2 · The vocabulary you must keep straight</h3>
+<p>Most architectural trouble in a platform like this comes from blurring these words. Keep each one a separate thing in code.</p>
+<table>
+  <tr><th style="width:16%">Word</th><th style="width:44%">Meaning</th><th>Example</th></tr>
+  <tr><td><b>Port</b></td><td>What capability is needed. A typed, versioned interface</td><td><code>agent@1</code></td></tr>
+  <tr><td><b>Protocol</b></td><td>How the talking happens on the wire</td><td>A2A JSON-RPC, MCP, CMP</td></tr>
+  <tr><td><b>Module</b></td><td>The adapter that implements a port for some system</td><td><code>conclave/a2a</code></td></tr>
+  <tr><td><b>Dock</b></td><td>Where the module's code runs</td><td>built-in, protocol, remote, sidecar, bridge</td></tr>
+  <tr><td><b>Connection</b></td><td>One configured instance of a module, with its own secrets and limits</td><td>"Research agent (staging)"</td></tr>
+  <tr><td><b>Node</b></td><td>One usable capability a connection exposes</td><td>a model, a tool, a skill, a workflow</td></tr>
+  <tr><td><b>Role</b></td><td>A named seat in a workspace, filled by a node</td><td>"Researcher"</td></tr>
+  <tr><td><b>Workflow / task type</b></td><td>A composition of steps over roles</td><td>"Research brief"</td></tr>
+  <tr><td><b>Run / task</b></td><td>One execution of a task type</td><td>"Tidal energy in the North Sea"</td></tr>
+  <tr><td><b>Step</b></td><td>One attempt at one piece of a run</td><td>"Draft, attempt 2"</td></tr>
+</table>
+<p>Installing a module does not create one node. Three connections to three gateways of the same module give three sets of nodes, each with its own permissions and spend limit.</p>
+
+<h3>A3 · Architecture in one page</h3>
+<div class="layers">
+  <div class="layer"><b>Experience</b><span>Web app (React): Home, Inbox, Workspaces, node editor, Trace, Insights, Connections, Settings · REST API · access tokens · Local Bridge CLI</span></div>
+  <div class="layer core"><b>Control plane · <code>packages/core</code></b><span>Accounts and access · module registry · connections and secrets · workspaces · budgets and ledger · inbox and notifications · insights (trace, usage, audit)</span></div>
+  <div class="row">
+    <div class="layer core"><b>Orchestrator</b><span>Plans the DAG, runs steps, branches, loops, approvals, sub-tasks, outside runs</span></div>
+    <div class="layer core"><b>Engine · <code>packages/engine</code></b><span>One leased task per run, signals, timers, crash recovery, in Postgres</span></div>
+  </div>
+  <div class="layer"><b>Module layer · <code>packages/module-sdk</code></b><span>Manifest · <code>defineModule</code> · conformance kit · Conclave Module Protocol (JSON-RPC over HTTPS or stdio) · bridge protocol</span></div>
+  <div class="row">
+    <div class="layer"><b>Protocol docks</b><span>OpenAI-compatible, MCP, A2A, webhook</span></div>
+    <div class="layer"><b>Built-in</b><span>Anthropic, mock, installed modules</span></div>
+    <div class="layer"><b>Remote</b><span>CMP over signed HTTPS</span></div>
+    <div class="layer"><b>Sidecar</b><span>CMP over stdio</span></div>
+    <div class="layer"><b>Bridge</b><span>A person's computer</span></div>
+  </div>
+  <div class="layer"><b>Outside systems</b><span>Model providers · agents · workflow engines · tool servers · later: knowledge, channels, devices, storage</span></div>
+</div>
+<p>The rule that holds it together: <b>core knows ports and never names a product.</b> A script (<code>scripts/lint-core-names.mjs</code>) fails the build if a product name appears in core.</p>
+<h4>Dependency order of the packages</h4>
+<pre>contract  ->  db  ->  engine  ->  module-sdk  ->  core  ->  server  ->  web
+                                     |                         ^
+                                     +-->  modules/*  ---------+      bridge (uses module-sdk only)</pre>
+<p>Nothing lower may import anything higher. <code>contract</code> has no knowledge of the database; <code>module-sdk</code> has no knowledge of core. That is what lets a module author depend on two small packages only.</p>
+
+<h3>A4 · Design techniques used everywhere</h3>
+<table>
+  <tr><th style="width:26%">Technique</th><th>Where, and why</th></tr>
+  <tr><td>Ports and adapters (hexagonal)</td><td>Ports in <code>contract</code>, adapters in <code>modules/*</code>. Core is testable with a mock module and never changes when a system is added</td></tr>
+  <tr><td>Contract-first, shared types</td><td>One package of types and zod schemas used by server, web and modules, so the API cannot drift from the UI</td></tr>
+  <tr><td>Durable state machine</td><td>A run is rows in Postgres. A worker "advances" it under a lease; anything in flight can be redone after a crash</td></tr>
+  <tr><td>Lease with <code>SKIP LOCKED</code></td><td>Exactly one worker advances a run at a time, without a queue service</td></tr>
+  <tr><td>Signals</td><td>Approvals, agent events and callbacks are written as rows and applied by the run's own worker, so there are no races</td></tr>
+  <tr><td>Transactional outbox</td><td>Every state change writes its event in the same transaction; a relay publishes it. No event without the change, no change without the event</td></tr>
+  <tr><td>Reserve, then settle</td><td>Money is held before a call and settled to the real cost after. A budget is never found out to be blown afterwards</td></tr>
+  <tr><td>Idempotency keys</td><td><code>run:step:attempt</code> to providers; an <code>Idempotency-Key</code> header on POSTs that start work</td></tr>
+  <tr><td>Envelope encryption</td><td>Master key wraps per-organisation data keys; data keys encrypt secrets with AES-256-GCM. Destroying a data key shreds its data, backups included</td></tr>
+  <tr><td>Default deny</td><td>Module egress limited to manifest hosts; sidecars off unless listed; bridge targets added only on the device; every API route must declare a guard</td></tr>
+  <tr><td>Capability narrowing</td><td>A child call gets a subset of its parent's permissions and a share of what is left of its budget</td></tr>
+  <tr><td>Normalised errors</td><td>Eleven error codes with a <code>retryable</code> flag, so retry behaviour is the same for every system</td></tr>
+  <tr><td>Expand-then-contract migrations</td><td>Forward-only SQL; add first, remove later, so a rolling deploy never breaks</td></tr>
+  <tr><td>Tenant column everywhere</td><td>Every row has <code>org_id</code> and every query filters on it</td></tr>
+  <tr><td>Conformance over trust</td><td>A module is accepted because it passes the kit, not because of who wrote it</td></tr>
+  <tr><td>One database for two profiles</td><td>A small query interface over PGlite (no server needed) and node-postgres. The same SQL runs on both, and tests run on both</td></tr>
+  <tr><td>W3C trace context</td><td>Every outside call carries a <code>traceparent</code> whose trace id is the top task</td></tr>
+</table>
+
+<h3>A5 · Rules for every stage</h3>
+<ul>
+  <li><b>Build in the order given.</b> Each stage only uses what earlier stages made.</li>
+  <li><b>Finish means tested.</b> Each stage ends with a "Done when" box. Write those tests before moving on.</li>
+  <li><b>Keep the three checks green:</b> <code>npm run typecheck</code>, <code>npm test</code>, <code>npm run lint:core-names</code>.</li>
+  <li><b>Do not add a port, a dock or an engine until a real integration needs it.</b> Each one is a contract, a test suite and a security surface.</li>
+  <li><b>Audit before rebuilding.</b> If the repository already has a stage, check it against this guide and fill gaps; do not rewrite it.</li>
+</ul>
+
+<!-- ===================================================== PART B -->
+<div class="part"><div class="k">Part B</div><h2>Foundation</h2><p>Stages 1 to 16 give a working product: sign in, connect a model, make a workspace, run a task with a budget, approve it, and watch it live.</p></div>
+
+<section class="stage">
+<h2><span class="n">STAGE 1</span>Monorepo and toolchain <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> One repository where every package is TypeScript source, with no build step between packages, and one command each for tests and type checks.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Nothing</dd>
+  <dt>Libraries</dt><dd>Node 22 or newer · npm workspaces · TypeScript 6 · tsx 4 (runs TypeScript directly) · Vitest 5</dd>
+  <dt>Files</dt><dd><code>package.json</code>, <code>tsconfig.base.json</code>, <code>tsconfig.json</code>, <code>vitest.config.ts</code>, <code>.gitignore</code>, <code>.dockerignore</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>Root <code>package.json</code>: <code>"type": "module"</code>, <code>"private": true</code>, <code>engines.node &gt;= 22</code>, workspaces <code>packages/*</code>, <code>modules/*</code>, <code>apps/*</code>.</li>
+  <li>Every workspace package exports its source: <code>"exports": { ".": "./src/index.ts" }</code>. The server runs with <code>node --import tsx</code>, so nothing is compiled between packages. This keeps the edit-run loop short and removes stale-build bugs.</li>
+  <li><code>tsconfig.base.json</code>: strict mode, <code>noUncheckedIndexedAccess</code>, <code>exactOptionalPropertyTypes</code>, ES2023 target, bundler module resolution. Strictness is cheap now and expensive to add later.</li>
+  <li>Root <code>tsconfig.json</code> includes <code>packages/*/src</code>, <code>modules/*/src</code>, <code>apps/server/src</code>, <code>apps/bridge/src</code>. The web app has its own tsconfig because it needs DOM types and JSX.</li>
+  <li><code>vitest.config.ts</code>: include <code>**/*.test.ts</code> under packages, modules, server and bridge; 30 s timeouts; <code>pool: "forks"</code> because each test file starts its own in-memory database.</li>
+  <li>Scripts: <code>dev:server</code>, <code>dev:web</code>, <code>start</code>, <code>build:web</code>, <code>test</code>, <code>typecheck</code> (two <code>tsc</code> runs), <code>lint:core-names</code>, <code>test:pg</code>, <code>test:a11y</code>.</li>
+  <li>Write <code>scripts/lint-core-names.mjs</code> now: it scans <code>packages/core/src</code> and fails if a product name (a provider, an agent product, a workflow tool) appears. Running it from day one is what keeps core generic.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>npm install</code>, <code>npm test</code> and <code>npm run typecheck</code> pass on an empty package.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 2</span>Contract package <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> The shapes everything else agrees on: the call envelope, the ports, the workflow schema, events and API types. This is the most important package to get right, because every other one depends on it.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stage 1</dd>
+  <dt>Libraries</dt><dd>zod 4 (schemas and validation) · uuidv7 (ids that sort by time)</dd>
+  <dt>Files</dt><dd><code>packages/contract/src/</code>: <code>call.ts</code>, <code>ports.ts</code>, <code>workflow.ts</code>, <code>conditions.ts</code>, <code>events.ts</code>, <code>api.ts</code>, <code>index.ts</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Ids.</b> Export <code>newId()</code> from uuidv7. Time-ordered ids give free ordering, good index locality, and paging by id.</li>
+  <li><b>The call envelope</b> (<code>call.ts</code>). Every node, whatever serves it, receives a <code>NodeCall</code> and answers with a <code>NodeResult</code>.
+<pre><code>interface NodeCall {
+  callId; runId; parentCallId; depth;        // where in the nest
+  nodeId; input: { text?, data?, files? };   // what to do
+  outputSchema?;
+  budget: { usd, tokens?, deadline? };       // most it may spend
+  permissions: string[];                     // "call:node:&lt;id&gt;"; children get a subset
+  trace: { traceparent };                    // W3C, trace id = top task
+  idempotencyKey;                            // run:step:attempt
+}</code></pre></li>
+  <li><b>Errors.</b> Eleven codes: <code>auth, rate_limited, invalid_request, not_found, timeout, unavailable, refused, cancelled, budget_exceeded, loop_detected, internal</code>. A <code>NodeCallError</code> class carries the code and <code>retryable</code> (true by default for rate_limited, timeout, unavailable). <code>toNodeError(err)</code> maps anything thrown, including <code>AbortError</code> to <code>cancelled</code>.</li>
+  <li><b>Usage and cost source.</b> <code>Usage { inputTokens, outputTokens, costUsd, costSource }</code> where the source is <code>metered | reported | reconciled | estimated</code>. Recording where a number came from is what later lets Insights say how exact the spend is.</li>
+  <li><b>Trace helpers.</b> <code>traceIdOf(rootRunId)</code> and <code>traceparent(rootRunId, callId)</code>. The span id uses the last 16 hex characters of the call id, because the start of a UUIDv7 is a timestamp and could repeat.</li>
+  <li><b>Ports</b> (<code>ports.ts</code>). List all twelve names so manifests can declare them (<code>model, agent, workflow, tool, knowledge, trigger, channel, device, storage, media, identity, secrets</code>), but give interfaces only to the ones you implement. A <code>PortRef</code> is <code>name@major</code>. <code>CallContext</code> is <code>{ call, signal, emit }</code>.
+    <ul>
+      <li><code>ModelPortV1</code>: <code>listModels()</code>, <code>generate(req, ctx)</code>.</li>
+      <li><code>ToolPortV1</code>: <code>listTools()</code>, <code>call(name, args, ctx)</code>. Tools carry <code>sensitive</code>.</li>
+      <li><code>AgentPortV1</code>: <code>listSkills</code>, <code>startRun</code>, <code>streamEvents</code>, <code>provideInput</code>, <code>cancel</code>. Add in Stage 21.</li>
+      <li><code>WorkflowPortV1</code>: <code>listWorkflows</code>, <code>trigger</code>, optional <code>poll</code>, <code>callback</code>, <code>cancel</code>. Add in Stage 21.</li>
+    </ul></li>
+  <li><b>Workflow schema</b> (<code>workflow.ts</code>). A zod discriminated union of steps by <code>kind</code>. Start with <code>role</code> and <code>approval</code>; later stages add <code>tool, branch, classify, merge, text, stop, workspace, agent, automation</code>. Shared step fields: <code>key</code>, <code>needs</code> (the DAG), <code>optional</code>, <code>disabled</code>, <code>timeoutMs</code>, <code>retry</code>. Also export <code>validateBrief</code>, <code>edgesOf</code>, <code>downstreamOf</code>, <code>portForStep</code>.</li>
+  <li><b>Events</b> (<code>events.ts</code>): <code>run.updated</code>, <code>step.updated</code>, <code>step.delta</code>, <code>inbox.updated</code>, <code>notification</code>, each in an envelope with a per-instance <code>seq</code> and topics (<code>user:&lt;id&gt;:inbox</code>, <code>workspace:&lt;id&gt;:runs</code>, <code>run:&lt;id&gt;</code>).</li>
+  <li><b>API types</b> (<code>api.ts</code>): every DTO the REST API returns. The web app imports these, so a changed field is a compile error in the UI.</li>
+</ol>
+<h4>Design notes</h4>
+<ul>
+  <li>Standardise the envelope, not each system's behaviour. A model, an agent and a workflow engine keep their own port; they share the call, the error and the usage.</li>
+  <li>A port must not force meaningless methods on a module. That is why agents get <code>startRun</code> and events while a tool only gets <code>call</code>.</li>
+  <li>Handles returned by long-running ports must be plain JSON, because they are stored in a checkpoint and read back after a restart.</li>
+</ul>
+<div class="done"><b>Done when.</b> <code>workflow.test.ts</code> covers schema parsing, cycle detection and brief validation. No file in this package imports anything but zod and uuidv7.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 3</span>Database layer <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> One small query interface that works the same on an embedded database and on a Postgres server, plus migrations.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stage 1</dd>
+  <dt>Libraries</dt><dd><code>pg</code> 8 (node-postgres) · <code>@electric-sql/pglite</code> (Postgres compiled to WebAssembly, for the Lite profile and tests)</dd>
+  <dt>Files</dt><dd><code>packages/db/src/index.ts</code>, <code>migrations.ts</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>Define <code>Queryable { query&lt;T&gt;(sql, params) }</code> and <code>Db extends Queryable { kind, tx(fn), close() }</code>. Core writes plain parameterised SQL against this. No ORM: the SQL is the same on both backends, and locks (<code>for update</code>, <code>skip locked</code>) stay visible.</li>
+  <li><code>createDb(url)</code>: <code>pglite:memory</code>, <code>pglite:&lt;dir&gt;</code>, or <code>postgres://</code>. For Postgres use a pool of 10 and an optional schema set through <code>search_path</code> on every connection.</li>
+  <li><code>createTestDb()</code>: in-memory PGlite by default; when <code>CONCLAVE_TEST_DATABASE_URL</code> is set, a fresh schema per test on real Postgres, dropped on close. This is how the same suite runs on both.</li>
+  <li>Helpers: <code>num()</code> (numerics arrive as strings), <code>iso()</code>, <code>json()</code> (send JSON as text and cast with <code>::jsonb</code>).</li>
+  <li><code>migrate(db)</code>: a <code>migrations</code> array of <code>{ id, sql }</code>, applied in order inside a transaction, recorded in a table. Forward-only. Never edit a migration that has shipped; add a new one.</li>
+  <li>Money is <code>numeric(14,6)</code>, never a float. Times are <code>timestamptz</code>. Every tenant table has <code>org_id</code>.</li>
+</ol>
+<p>The tables themselves are added by the stage that needs them; Appendix X2 lists them all with the migration they belong to.</p>
+<div class="done"><b>Done when.</b> A test migrates an in-memory database, runs a transaction that rolls back on a throw, and the same test passes with <code>npm run test:pg</code>.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 4</span>Durable execution engine <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Guarantee three things and nothing more: only one worker advances a run at a time; work survives a crash; timers and signals wake runs. Workflow meaning stays in core.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 2, 3</dd>
+  <dt>Libraries</dt><dd>None beyond the db package</dd>
+  <dt>Files</dt><dd><code>packages/engine/src/index.ts</code></dd>
+  <dt>Tables</dt><dd><code>engine_tasks</code> (one "advance" row per run: <code>available_at</code>, <code>locked_until</code>, <code>locked_by</code>, <code>generation</code>, <code>attempts</code>), <code>engine_signals</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>The interface:
+<pre><code>interface ExecutionEngine {
+  wake(q, runId, at?)                 // call inside the caller's transaction
+  signal(q, runId, name, payload)     // deliver and wake
+  forget(q, runId)
+  startWorker(handler, opts): EngineWorker
+}
+type AdvanceHandler = (runId, signals, heartbeat) =&gt; Promise&lt;AdvanceOutcome&gt;
+type AdvanceOutcome = { kind: "idle" } | { kind: "reschedule", at: Date }</code></pre></li>
+  <li><b>Claim.</b> One statement selects a due task <code>for update skip locked</code>, sets <code>locked_until = now() + lease</code> and <code>locked_by</code>. Expired leases are due again, which is the whole crash-recovery story.</li>
+  <li><b>Heartbeat.</b> The handler calls <code>heartbeat()</code> during long steps to extend the lease.</li>
+  <li><b>Generation.</b> <code>wake</code> bumps <code>generation</code>. After the handler returns "idle", delete the task only if the generation is unchanged; otherwise something woke the run meanwhile and it must run again. This closes the lost-wake-up race.</li>
+  <li><b>Signals.</b> Read unconsumed signals when claiming, pass them to the handler, mark them consumed in the same transaction as the handler's effects.</li>
+  <li><b>Worker.</b> A polling loop with a concurrency limit; <code>tick()</code> and <code>drain()</code> for tests (<code>autoStart: false</code>), so tests are deterministic and need no sleeps.</li>
+</ol>
+<h4>Design notes</h4>
+<ul>
+  <li>This is deliberately the smallest engine that is correct. It needs only Postgres, which is what the Lite profile promises.</li>
+  <li>Keep it behind the interface. When scale needs Temporal, write a second implementation; core does not change. Do not make a queue such as BullMQ the only engine: it would tie Lite to Redis.</li>
+  <li>Define execution meaning once, in core, independent of the engine: at-least-once step execution, made safe by idempotency keys and by recording each attempt.</li>
+</ul>
+<div class="done"><b>Done when.</b> Tests show: two workers never run one run at once; a task whose lease expired is picked up; a wake during a handler causes one more advance; a signal reaches the handler exactly once.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 5</span>Module SDK and conformance kit <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Everything a module author needs, in one small package: how to declare a module, what it is given, and a test kit that says whether it behaves.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stage 2</dd>
+  <dt>Libraries</dt><dd>zod 4</dd>
+  <dt>Files</dt><dd><code>packages/module-sdk/src/</code>: <code>manifest.ts</code>, <code>index.ts</code>, <code>conformance.ts</code> (later: <code>cmp.ts</code>, <code>bridge-protocol.ts</code>)</dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Manifest schema</b> (zod). The install screen, the egress allow-list and the secret store are all driven by it.
+<pre><code>id          "publisher/name"
+version     semver
+name, description
+ports       ["model@1", ...]            at least one
+docks       ["built-in"|"protocol"|"remote"|"sidecar"|"bridge"]
+config      [{ key, label, type: string|url|secret|number, required, placeholder, help, default }]
+permissions { egress: [host | "{config.key}" | "{config.key[]}"], secrets: [key] }
+sensitiveActions, outsideVersions, nodeUi { icon, colour }, reference</code></pre></li>
+  <li><b><code>defineModule({ manifest, create })</code></b> validates the manifest at load time, so a mistake stops the server at start, not at first use.</li>
+  <li><b><code>ModuleContext</code></b>, given to <code>create</code> once per connection: non-secret <code>config</code>, decrypted <code>secrets</code> for this connection only, an egress-checked <code>fetch</code>, a <code>log</code>, and the <code>connection { id, orgId }</code>. A module must use <code>ctx.fetch</code>, never the global one.</li>
+  <li><b><code>ModuleInstance</code></b>: <code>ports</code>, <code>health()</code>, optional <code>outsideVersion()</code>, <code>discover()</code>, <code>dockedModule()</code>, <code>close()</code>.</li>
+  <li><b>Helpers</b>: <code>httpError(status, message)</code> maps HTTP statuses to contract errors; <code>statusForError</code> maps errors to a connection status; <code>requireString</code>; <code>secretKeys(manifest)</code>; <code>declaredPorts(manifest)</code>.</li>
+  <li><b>Conformance kit</b> (<code>runConformance(module, options)</code>). For each declared port it checks: lists return the right shape; a call completes; errors use contract codes; cancellation through the signal works; for long-running ports, handles survive a JSON round trip and watching a finished run again yields its final event. It returns named checks with pass or fail, and takes a fake <code>fetch</code> so tests need no network.</li>
+</ol>
+<div class="done"><b>Done when.</b> A ten-line module passes the kit, and a module with a bad id fails at <code>defineModule</code> with a readable message.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 6</span>Secret vault <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Keys are encrypted at rest, never returned by the API, and can be destroyed for good.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stage 3</dd>
+  <dt>Libraries</dt><dd><code>node:crypto</code> only</dd>
+  <dt>Files</dt><dd><code>packages/core/src/secrets.ts</code></dd>
+  <dt>Tables</dt><dd><code>data_keys</code> (per organisation, wrapped), <code>secrets</code> (ciphertext)</dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>A 32-byte master key from <code>CONCLAVE_MASTER_KEY</code>, or generated into <code>&lt;data dir&gt;/master.key</code> with mode <code>0600</code>.</li>
+  <li>Each organisation gets a random data key, stored wrapped by the master key.</li>
+  <li><code>store(q, orgId, values)</code> encrypts a JSON object of secret values with the data key using AES-256-GCM (random 12-byte nonce, auth tag kept) and returns the row id. <code>open(q, secretId)</code> decrypts.</li>
+  <li><code>seal</code> and <code>unseal</code> for secrets that belong to a person, not an organisation (a TOTP seed).</li>
+  <li><code>shred(orgId)</code> marks the data key destroyed. Everything it encrypted is unreadable, including copies in backups.</li>
+  <li>Rule for callers: decrypt for one call, keep the values out of logs, errors and responses.</li>
+</ol>
+<div class="done"><b>Done when.</b> Tests show a round trip, that tampered ciphertext fails, and that after <code>shred</code> nothing can be read.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 7</span>Accounts, roles and access <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Know who is calling, in which organisation, and what they may do, in a workspace or outside one.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 3, 6</dd>
+  <dt>Libraries</dt><dd><code>node:crypto</code> (scrypt for passwords, SHA-256 for token hashes) · <code>@simplewebauthn/server</code> (passkeys) · <code>qrcode</code> (TOTP setup)</dd>
+  <dt>Files</dt><dd><code>packages/core/src/</code>: <code>errors.ts</code>, <code>access.ts</code>, <code>accounts.ts</code>, <code>mfa.ts</code></dd>
+  <dt>Tables</dt><dd><code>orgs, users, memberships, identities, sessions, api_tokens, invites, workspace_members, user_totp, recovery_codes, passkeys, auth_challenges, audit_log</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Errors.</b> <code>ConclaveError(status, title, detail, errors)</code> with helpers <code>notFound</code>, <code>invalid</code>, <code>conflict</code>, <code>budgetBlocked</code> (402). The server turns these into RFC 9457 problem details.</li>
+  <li><b>Actor and Principal.</b> <code>Actor { orgId, userId }</code> for services; <code>Principal</code> adds <code>role</code>, <code>scopes</code>, <code>via: session | token</code>.</li>
+  <li><b>Roles and permissions.</b> Four roles, each a superset of the one before:
+    <table>
+      <tr><th>Role</th><th>Adds</th></tr>
+      <tr><td>Viewer</td><td><code>workspace:read</code>, <code>connection:read</code></td></tr>
+      <tr><td>Runner</td><td><code>task:run</code>, <code>approval:decide</code></td></tr>
+      <tr><td>Editor</td><td><code>workspace:edit</code>, <code>connection:manage</code></td></tr>
+      <tr><td>Owner</td><td><code>member:manage</code>, <code>org:manage</code></td></tr>
+    </table></li>
+  <li><b><code>Access</code>.</b> <code>workspaceRole(q, principal, workspaceId)</code> returns the per-workspace override if there is one, the organisation role otherwise, "owner" for a person's own personal workspace, and null for someone else's. <code>ensure()</code> throws 404 when a workspace is invisible and 403 when the permission is missing. A token's scopes narrow further; a token can never do more than its maker's role.</li>
+  <li><b>Accounts.</b> Owner setup; email and password; sessions (a random cookie value, only its hash stored, 30-day expiry); invites (hashed token, optional fixed email); personal access tokens with a <code>cnc_</code> prefix and scopes; switching organisation; allowed sign-up domains.</li>
+  <li><b>Outside sign-in.</b> <code>signInWithIdentity(provider, subject, email)</code> links by provider and subject, and by verified email if allowed. The provider code lives in the server (Stage 15).</li>
+  <li><b>Second factors.</b> TOTP with single-use recovery codes (hashed), replay protection by remembering the last accepted step; passkeys through WebAuthn for sign-in and as a second step. A correct password with a second factor returns a short-lived ticket, not a session.</li>
+  <li><b>Audit.</b> <code>audit(q, actor, action, target, detail)</code> writes one row. Call it in the same transaction as the change, for every change. The reading side comes in Stage 27.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>accounts.test.ts</code> and <code>mfa.test.ts</code> cover setup, sign-in, invites, token scopes, role overrides, private workspaces, TOTP replay and recovery codes.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 8</span>Module registry and connections <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Turn "a module is installed" into "a configured, tested, limited connection whose nodes can be listed and called".</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 5, 6, 7</dd>
+  <dt>Files</dt><dd><code>packages/core/src/modules.ts</code>, <code>connections.ts</code></dd>
+  <dt>Tables</dt><dd><code>connections</code> (name, module id and version, dock, config, secret id, status, spend limit, disabled, later: ports and remote manifest)</dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b><code>ModuleRegistry</code>.</b> <code>install(module, source)</code>, <code>get(id)</code>, <code>has(id)</code>, <code>list()</code> returning <code>ModuleDto</code> with config fields, permissions and source ("built-in" or "installed").</li>
+  <li><b>Egress.</b> <code>allowedHosts(manifest, config)</code> resolves <code>{config.key}</code> to the host of that URL setting and <code>{config.key[]}</code> to a comma-separated list. <code>egressFetch</code> wraps <code>fetch</code> and refuses any other host with a message that names the module and the host.</li>
+  <li><b><code>ModuleRuntime</code>.</b> One live instance per connection, keyed by a stamp of its config; rebuilt when the connection changes and closed on eviction. Caches model, tool, skill and workflow lists for ten minutes.</li>
+  <li><b><code>Connections</code> service.</b>
+    <ul>
+      <li><code>create</code>: validate values against the manifest's config fields (required, URL shape, number), split secret fields into the vault, store the rest as config, write an audit row.</li>
+      <li><code>update</code>, <code>remove</code> (refused while a role uses it), <code>setDisabled</code> (the kill switch).</li>
+      <li><code>test</code>: build the instance, call <code>health()</code> and <code>discover()</code>, save status, detail and outside version.</li>
+      <li><code>models</code>, <code>tools</code>, <code>skills</code>, <code>workflows</code>: the nodes a connection exposes.</li>
+      <li><code>instance(actor, id)</code>: what the orchestrator calls to get a live module.</li>
+      <li><code>checkAll</code>: periodic health checks.</li>
+    </ul></li>
+  <li><b>DTO.</b> Never return secrets. Return <code>secretKeys</code> (which fields are set), month spend, and which workspaces use the connection.</li>
+</ol>
+<h4>Connections to other parts</h4>
+<p>Workspaces point roles at connections. The orchestrator asks for instances. Budgets read a connection's spend limit. The trace and Insights join on connection id.</p>
+<div class="done"><b>Done when.</b> <code>connections.test.ts</code>: secrets never appear in a DTO; a module that fetches an undeclared host is refused; a disabled connection cannot be called; audit rows exist.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 9</span>First modules: mock, OpenAI-compatible, Anthropic <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Prove the Model port with three very different adapters, and get a free model for tests and first-run.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stage 5</dd>
+  <dt>Libraries</dt><dd><code>@anthropic-ai/sdk</code> for the Anthropic module. The other two use only <code>ctx.fetch</code></dd>
+  <dt>Files</dt><dd><code>modules/mock-model</code>, <code>modules/openai-compatible</code>, <code>modules/anthropic</code>, each with <code>src/index.ts</code> and <code>src/index.test.ts</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Mock model</b> (built-in dock). Deterministic output from the prompt, a few named models with fixed prices, text deltas through <code>ctx.emit</code>, and prompt keywords that force a failure or a refusal, so retry and error paths can be tested without a network. No key, no cost.</li>
+  <li><b>OpenAI-compatible</b> (protocol dock). Config: base URL, optional key, prices per million tokens. <code>listModels</code> from <code>/models</code>; <code>generate</code> streams <code>/chat/completions</code> over server-sent events, emits deltas, reads reported usage, and estimates usage by characters when the server reports none (marking <code>usageSource: "estimated"</code>). Egress is <code>{config.baseUrl}</code>. One module covers OpenAI, Ollama, vLLM, LM Studio, OpenRouter and Groq.</li>
+  <li><b>Anthropic</b> (built-in dock, official SDK). Streaming, effort levels, prompt-cache token counts, mapping of refusals to the <code>refused</code> code, and passing the idempotency key. Before writing it, read the current SDK documentation for model ids and parameters; do not rely on memory.</li>
+  <li>Each module's test runs <code>runConformance</code> against a recorded or fake server, then a few specific checks (headers sent, usage read, errors mapped).</li>
+</ol>
+<div class="done"><b>Done when.</b> All three pass the conformance kit. This is the first proof that the port works across unlike systems.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 10</span>Workspaces, templates and versions <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> A workspace holds roles (seats filled by nodes), task types (workflows), a budget and a version history, and can be exported and imported.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 2, 7, 8</dd>
+  <dt>Files</dt><dd><code>packages/core/src/</code>: <code>workspaces.ts</code>, <code>templates.ts</code>, <code>builder.ts</code>, <code>render.ts</code></dd>
+  <dt>Tables</dt><dd><code>workspaces, workspace_versions, roles, task_types</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Roles.</b> <code>key, name, description, instructions, port, connection_id, model, effort</code>. A role is on one port; <code>model</code> holds the node name (a model, a tool, a skill or a workflow id).</li>
+  <li><b>Task types.</b> <code>key, name, input_fields, workflow</code>. Input fields define the brief form.</li>
+  <li><b>Three ways to create.</b> From a built-in template (start with Research Brief: search, research, draft, approval); from the guided builder (<code>composeWorkspace(answers)</code>: the same answers always give the same workspace, and <code>compose</code> previews without creating); blank; or by importing a package.</li>
+  <li><b>Saving a task type</b> validates everything: the schema, unique keys, that <code>needs</code> point at real steps, no cycles, roles exist and are on the right port, templates reference real fields and earlier steps. Error messages name the step. Each save bumps the workspace version and stores the manifest in <code>workspace_versions</code>.</li>
+  <li><b>Runs keep their workflow.</b> A run copies the workflow at start, so editing never changes a task in flight. Task types still referenced by past runs are archived, not deleted.</li>
+  <li><b>Templates</b> (<code>render.ts</code>): <code>{{input.field}}</code>, <code>{{steps.key.output}}</code>, and later <code>{{loop.index}}</code>. Keep it a small, safe substitution, not a general expression language.</li>
+  <li><b>Export and import.</b> A package is the manifest without connection ids or secrets; importing asks which connection fills each role.</li>
+  <li><b>Listing.</b> <code>list</code> and <code>get</code> return month spend, running and waiting counts, and per-role month statistics; other people's personal workspaces are filtered in SQL.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>builder.test.ts</code> shows determinism; saving an invalid workflow is refused with a named step; export then import gives an equal workspace.</div>
+</section>

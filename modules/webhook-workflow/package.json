@@ -1,0 +1,14 @@
+{
+  "name": "@conclave/module-webhook-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Protocol dock for any workflow started by a webhook: it answers at once, or posts its result to a one-time callback URL.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*"
+  }
+}

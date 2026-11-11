@@ -1,4 +1,4 @@
-import { NodeCallError, newId, type CallContext, type NodeCall } from "@conclave/contract";
+import { NodeCallError, newId, type AgentEvent, type AgentRunHandle, type CallContext, type NodeCall, type WorkflowStatus } from "@conclave/contract";
 import { declaredPorts, type ConclaveModule, type ModuleContext } from "./index";
 import { manifestSchema } from "./manifest";
 
@@ -30,7 +30,26 @@ export interface ConformanceOptions {
   /** Tool and arguments used for tool@1 call checks; defaults to the first listed tool with no arguments. */
   tool?: string;
   toolArgs?: Record<string, unknown>;
+  /** Query used for knowledge@1 search checks; defaults to a short one. */
+  knowledgeQuery?: string;
+  /** Skill and task for agent@1 checks; defaults to the first skill and a short task. */
+  agentSkill?: string;
+  agentTask?: string;
+  /** Answer given if the agent asks a question during the check. */
+  agentAnswer?: string;
+  /** Workflow and inputs for workflow@1 checks; defaults to the first workflow and no inputs. */
+  workflow?: string;
+  workflowInputs?: Record<string, unknown>;
+  /** How long a run may take before the check fails. Default 30 s. */
+  runTimeoutMs?: number;
 }
+
+const AGENT_EVENTS = new Set(["progress", "needs_input", "completed", "failed"]);
+const WORKFLOW_STATES = new Set(["running", "succeeded", "failed", "cancelled"]);
+/** Handles are kept in checkpoints, so they must survive a JSON round trip unchanged. */
+const plainJson = (value: unknown, what: string) => {
+  if (JSON.stringify(JSON.parse(JSON.stringify(value))) !== JSON.stringify(value)) throw new Error(`${what} is not plain JSON.`);
+};
 
 export function testCallContext(signal?: AbortSignal): CallContext {
   const call: NodeCall = {
@@ -181,6 +200,172 @@ export async function runConformance(mod: ConclaveModule, opts: ConformanceOptio
         throw new Error(`Threw a ${err instanceof Error ? err.name : typeof err} instead of a NodeCallError.`);
       }
       throw new Error("An empty tool name should be rejected.");
+    });
+  }
+
+  const knowledge = inst.ports.knowledge;
+  if (knowledge) {
+    await check("knowledge: listSources returns sources", async () => {
+      const list = await knowledge.listSources();
+      if (!Array.isArray(list)) throw new Error("listSources did not return an array.");
+      for (const s of list) if (typeof s.id !== "string" || !s.id) throw new Error("A source has no id.");
+      return `${list.length} source(s)`;
+    });
+
+    await check("knowledge: search returns passages with a source, best first, within the limit", async () => {
+      const found = await knowledge.search({ query: opts.knowledgeQuery ?? "what is this about", limit: 3 }, testCallContext());
+      if (!found || !Array.isArray(found.passages)) throw new Error("search did not return { passages }.");
+      if (found.passages.length > 3) throw new Error(`Asked for 3 passages and got ${found.passages.length}.`);
+      let last = Infinity;
+      for (const p of found.passages) {
+        if (typeof p.text !== "string" || !p.text) throw new Error("A passage has no text.");
+        if (typeof p.source?.id !== "string" || !p.source.id) throw new Error("A passage does not say which document it came from.");
+        if (p.score !== undefined) {
+          if (typeof p.score !== "number" || p.score < 0 || p.score > 1) throw new Error("A score is not between 0 and 1.");
+          if (p.score > last + 1e-9) throw new Error("Passages are not ordered best first.");
+          last = p.score;
+        }
+      }
+      plainJson(found.passages, "The passages");
+      return `${found.passages.length} passage(s)`;
+    });
+
+    await check("knowledge: search honours cancellation", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      try {
+        await knowledge.search({ query: "anything", limit: 1 }, testCallContext(controller.signal));
+      } catch (err) {
+        if (err instanceof NodeCallError && err.code === "cancelled") return;
+        throw new Error(`Expected a cancelled error, got: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      throw new Error("search resolved even though the call was already cancelled.");
+    });
+
+    await check("knowledge: errors use contract error codes", async () => {
+      try {
+        await knowledge.search({ query: "", limit: 1 }, testCallContext());
+      } catch (err) {
+        if (err instanceof NodeCallError) return `threw ${err.code}`;
+        throw new Error(`Threw a ${err instanceof Error ? err.name : typeof err} instead of a NodeCallError.`);
+      }
+      throw new Error("An empty query should be rejected.");
+    });
+  }
+
+  const agent = inst.ports.agent;
+  if (agent) {
+    let skill = opts.agentSkill;
+    const timeout = opts.runTimeoutMs ?? 30_000;
+    await check("agent: listSkills returns skills", async () => {
+      const skills = await agent.listSkills();
+      if (!Array.isArray(skills)) throw new Error("listSkills did not return an array.");
+      for (const s of skills) if (typeof s.id !== "string" || !s.id) throw new Error("A skill has no id.");
+      skill ??= skills[0]?.id;
+      return `${skills.length} skill(s)`;
+    });
+
+    let handle: AgentRunHandle | undefined;
+    let final: AgentEvent | undefined;
+    await check("agent: a run streams known events to a final one", async () => {
+      handle = await agent.startRun({ ...(skill ? { skill } : {}), text: opts.agentTask ?? "Write one sentence about the sea." }, testCallContext());
+      if (typeof handle?.externalRunId !== "string" || !handle.externalRunId) throw new Error("startRun returned no externalRunId.");
+      plainJson(handle, "The run handle");
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      const seen: string[] = [];
+      try {
+        for await (const event of agent.streamEvents(handle, testCallContext(controller.signal))) {
+          if (!AGENT_EVENTS.has(event.type)) throw new Error(`Unknown event type "${String((event as { type: unknown }).type)}".`);
+          seen.push(event.type);
+          if (event.type === "needs_input") {
+            if (opts.agentAnswer === undefined) {
+              final = event;
+              break;
+            }
+            await agent.provideInput(handle, opts.agentAnswer, testCallContext());
+          }
+          if (event.type === "completed" || event.type === "failed") {
+            final = event;
+            break;
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!final) throw new Error(`No final event within ${timeout / 1000} s (saw ${seen.join(", ") || "nothing"}).`);
+      return seen.join(" → ");
+    });
+
+    if (handle && final && final.type !== "needs_input") {
+      await check("agent: watching a finished run again yields its final event", async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5_000);
+        try {
+          for await (const event of agent.streamEvents(handle!, testCallContext(controller.signal))) {
+            if (event.type === final!.type) return;
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+        throw new Error("A second streamEvents on a finished run did not yield its final event: a restarted host could not finish the step.");
+      });
+    }
+
+    await check("agent: cancel resolves", async () => {
+      const h = await agent.startRun({ ...(skill ? { skill } : {}), text: "A run to cancel." }, testCallContext());
+      await agent.cancel(h);
+    });
+
+    await check("agent: errors use contract error codes", async () => {
+      try {
+        await agent.startRun({ skill: "no-such-skill-for-conformance", text: "x" }, testCallContext());
+      } catch (err) {
+        if (err instanceof NodeCallError) return `threw ${err.code}`;
+        throw new Error(`Threw a ${err instanceof Error ? err.name : typeof err} instead of a NodeCallError.`);
+      }
+      return "accepted an unknown skill (allowed when an agent has no fixed skills)";
+    });
+  }
+
+  const flow = inst.ports.workflow;
+  if (flow) {
+    let workflowId = opts.workflow;
+    const timeout = opts.runTimeoutMs ?? 30_000;
+    await check("workflow: listWorkflows returns workflows", async () => {
+      const list = await flow.listWorkflows();
+      if (!Array.isArray(list)) throw new Error("listWorkflows did not return an array.");
+      for (const w of list) if (typeof w.id !== "string" || !w.id) throw new Error("A workflow has no id.");
+      workflowId ??= list[0]?.id;
+      return `${list.length} workflow(s)`;
+    });
+
+    if (workflowId) {
+      await check("workflow: trigger reaches a final status", async () => {
+        const { execution, status } = await flow.trigger(workflowId!, { data: opts.workflowInputs ?? {} }, testCallContext());
+        if (typeof execution?.executionId !== "string" || !execution.executionId) throw new Error("trigger returned no executionId.");
+        plainJson(execution, "The execution handle");
+        let current: WorkflowStatus = status;
+        const until = Date.now() + timeout;
+        while (current.state === "running") {
+          if (!flow.poll) return "running; the result comes by callback";
+          if (Date.now() > until) throw new Error(`Still running after ${timeout / 1000} s.`);
+          await new Promise((r) => setTimeout(r, 200));
+          current = await flow.poll(execution, testCallContext());
+        }
+        if (!WORKFLOW_STATES.has(current.state)) throw new Error(`Unknown state "${String(current.state)}".`);
+        return current.state;
+      });
+    }
+
+    await check("workflow: errors use contract error codes", async () => {
+      try {
+        await flow.trigger("no-such-workflow-for-conformance", { data: {} }, testCallContext());
+      } catch (err) {
+        if (err instanceof NodeCallError) return `threw ${err.code}`;
+        throw new Error(`Threw a ${err instanceof Error ? err.name : typeof err} instead of a NodeCallError.`);
+      }
+      return "accepted an unknown workflow id (allowed when a module serves one workflow)";
     });
   }
 

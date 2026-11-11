@@ -5,12 +5,16 @@ import type { ConclaveModule } from "@conclave/module-sdk";
 import { Access } from "./access";
 import { Accounts } from "./accounts";
 import { Connections } from "./connections";
+import { bridgeSigningKey, Devices } from "./devices";
 import type { Actor } from "./errors";
 import { EventBus, OutboxRelay } from "./events";
+import { Insights } from "./insights";
 import { ModuleRegistry } from "./modules";
 import { SecondFactors, type WebAuthnConfig } from "./mfa";
 import { Notifier, type NotifierOptions } from "./notifications";
 import { Orchestrator, type OrchestratorOptions } from "./orchestrator";
+import { OtelExporter, type OtelOptions } from "./otel";
+import { Policies } from "./policies";
 import { SecretVault } from "./secrets";
 import { Workspaces } from "./workspaces";
 
@@ -26,6 +30,8 @@ export interface ConclaveOptions {
   signupDomains?: string[];
   /** Email, push and link settings for notifications (NOTE-003). */
   notifications?: NotifierOptions;
+  /** Send finished traces to an OpenTelemetry collector. Off when unset. */
+  otel?: OtelOptions;
   /** Relying party for passkeys (ACC-002). Defaults to localhost. */
   webauthn?: WebAuthnConfig;
 }
@@ -39,10 +45,16 @@ export interface Conclave {
   connections: Connections;
   workspaces: Workspaces;
   orchestrator: Orchestrator;
+  /** What tasks may use: allow, ask first, never. */
+  policies: Policies;
+  /** Traces, spend and the audit trail. */
+  insights: Insights;
   accounts: Accounts;
   access: Access;
   notifier: Notifier;
   mfa: SecondFactors;
+  /** Local Bridge devices (SRS 8.8). */
+  devices: Devices;
   /** Make sure an owner org and user exist; returns them. Single-user until accounts land (ACC-001). */
   bootstrapOwner(input?: { email?: string; name?: string; orgName?: string }): Promise<Actor>;
   /** Start the engine worker, the outbox relay and periodic health checks. */
@@ -60,9 +72,13 @@ export async function createConclave(opts: ConclaveOptions): Promise<Conclave> {
   const connections = new Connections(opts.db, registry, vault, opts.fetch);
   const workspaces = new Workspaces(opts.db);
   const orchestrator = new Orchestrator(opts.db, engine, connections, bus, opts.orchestrator);
+  const insights = new Insights(opts.db);
+  const policies = new Policies(opts.db);
+  const otel = opts.otel ? new OtelExporter(opts.db, insights, opts.otel) : undefined;
   const mfa = new SecondFactors(opts.db, vault, opts.webauthn ?? { rpId: "localhost", rpName: "Conclave", origins: ["http://localhost:8787"] });
   const accounts = new Accounts(opts.db, { signupDomains: opts.signupDomains ?? [], mfa });
   const access = new Access();
+  const devices = new Devices(opts.db, bridgeSigningKey(opts.masterKey));
   const notifier = new Notifier(opts.db, bus, vault, { ...(opts.fetch ? { fetch: opts.fetch } : {}), ...opts.notifications });
 
   let worker: EngineWorker | undefined;
@@ -78,10 +94,13 @@ export async function createConclave(opts: ConclaveOptions): Promise<Conclave> {
     connections,
     workspaces,
     orchestrator,
+    policies,
+    insights,
     accounts,
     access,
     notifier,
     mfa,
+    devices,
 
     async bootstrapOwner(input = {}) {
       const [existing] = await opts.db.query<{ org_id: string; user_id: string }>(
@@ -105,6 +124,7 @@ export async function createConclave(opts: ConclaveOptions): Promise<Conclave> {
     startBackground(workerOpts = {}) {
       relay.start();
       notifier.start();
+      otel?.start();
       worker = engine.startWorker(orchestrator.advance, workerOpts);
       const every = workerOpts.healthCheckMs ?? 10 * 60_000;
       if (every > 0) {
@@ -118,6 +138,7 @@ export async function createConclave(opts: ConclaveOptions): Promise<Conclave> {
     async stop() {
       clearInterval(healthTimer);
       await worker?.stop();
+      otel?.stop();
       await notifier.stop();
       await relay.stop();
     },

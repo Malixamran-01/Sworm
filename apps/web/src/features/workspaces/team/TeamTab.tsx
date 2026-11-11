@@ -38,7 +38,7 @@ function RoleRows({ ws, role, conn }: { ws: WorkspaceDetailDto; role: RoleDto; c
             )}
             <span className="flex min-w-0 flex-col gap-0.5">
               <span className="text-sm font-semibold">
-                {role.name} {empty ? <Pill tone="warn">Empty</Pill> : null} {role.port.startsWith("tool@") ? <Pill>tool</Pill> : null}
+                {role.name} {empty ? <Pill tone="warn">Empty</Pill> : null} {role.port !== "model@1" ? <Pill>{({ "tool@1": "tool", "agent@1": "agent", "workflow@1": "workflow", "knowledge@1": "knowledge" } as Record<string, string>)[role.port] ?? role.port}</Pill> : null}
               </span>
               <span className="text-muted">{role.description}</span>
             </span>
@@ -48,7 +48,7 @@ function RoleRows({ ws, role, conn }: { ws: WorkspaceDetailDto; role: RoleDto; c
           <NodePicker idPrefix={`role-${role.key}`} value={node} onChange={setNode} port={role.port} compact />
         </td>
         <td className="px-2 py-3.5 align-top">
-          {role.port.startsWith("tool@") ? <span className="text-muted">—</span> : <>
+          {role.port !== "model@1" ? <span className="text-muted">—</span> : <>
           <label className="sr-only" htmlFor={`effort-${role.key}`}>
             {role.name} effort
           </label>

@@ -1,0 +1,308 @@
+
+<section class="stage">
+<h2><span class="n">STAGE 11</span>Budgets and the usage ledger <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Money is checked before it is spent, at three levels, and every charge is recorded with where the figure came from.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 3, 8, 10</dd>
+  <dt>Files</dt><dd><code>packages/core/src/budget.ts</code></dd>
+  <dt>Tables</dt><dd><code>budget_reservations</code> (held, settled, released), <code>usage_ledger</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Pricing.</b> <code>pricingFor(models, model)</code> reads prices a module reports; <code>costOf(pricing, usage)</code> charges input and output per million tokens, cache reads at 0.1 of input and cache writes at 1.25.</li>
+  <li><b>How much to hold.</b> <code>upperBound</code> is the worst case (whole prompt plus every allowed output token). <code>historicalP90</code> is the 90th percentile of this step's past costs in this task type when there is enough history. Hold the p90 when known, the upper bound otherwise.</li>
+  <li><b><code>reserve(q, request)</code></b> runs in a transaction, locks the workspace row, and checks all three limits with money already held counted as spent:
+    <ul><li>the task's own limit,</li><li>the workspace's monthly budget,</li><li>the connection's monthly spend limit.</li></ul>
+    It throws <code>budget_exceeded</code> with a sentence that says which limit and what to change.</li>
+  <li><b><code>settle(q, id, actual)</code></b> after the call; <b><code>release(q, id)</code></b> when the call failed or was cancelled. A step must never end with money still held.</li>
+  <li><b>Ledger row</b> per charge: workspace, run, step, connection, role, module, model, tokens, cost, cost source, reservation.</li>
+  <li><b>Estimates before a run.</b> Median and p90 cost and median duration from past runs of the task type, with a confidence level based on how many runs there were and which cost sources they used.</li>
+</ol>
+<h4>Design notes</h4>
+<ul>
+  <li>Reservation is what makes parallel steps safe: two steps cannot both spend the last dollar.</li>
+  <li>The cost source label is cheap to write and is the basis of an honest dashboard.</li>
+</ul>
+<div class="done"><b>Done when.</b> Tests show a step refused at each of the three limits, a reservation released on failure, and a ledger row matching the reported usage.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 12</span>Orchestrator: runs, steps, approvals <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Take a task type and a brief, and carry the run to an end: plan what can run, run it within budget, retry, wait for people, recover from crashes.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 2, 4, 8, 10, 11</dd>
+  <dt>Files</dt><dd><code>packages/core/src/orchestrator.ts</code>, <code>dto.ts</code>, <code>conclave.ts</code> (the facade that wires everything), <code>test-helpers.ts</code></dd>
+  <dt>Tables</dt><dd><code>runs, run_steps, approvals, inbox_items</code></dd>
+</dl>
+<h4>The loop</h4>
+<pre><code>start()   validate brief and setup -> insert run (copy of the workflow) -> engine.wake -> emit -> audit
+advance(runId, signals, heartbeat)          // the engine's handler
+  load run + step rows
+  recoverInterrupted      rows left "running" by a crash become retries
+  applySignals            approvals, answers, outside events
+  plan                    which steps are runnable, waiting, done
+  if nothing runnable     finish, or go idle / reschedule for a retry or deadline
+  else                    run every runnable step in parallel, then loop</code></pre>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Start.</b> Validate the brief against the input fields. Check every enabled step has a role with a node, unless the step is optional. Refuse when the month budget is already used. Title the run from the first filled field. Insert, wake, emit, audit, all in one transaction.</li>
+  <li><b>Step rows.</b> One row per attempt: <code>step_key, kind, attempt, status, role_key, connection_id, node_label, input, output, error, error_code, tokens, cost, cost_source, latency_ms, idempotency_key (unique), retry_at, round</code>. Statuses: <code>pending, running, waiting, succeeded, failed, cancelled, superseded, skipped, not_taken</code>.</li>
+  <li><b>Plan.</b> A step is runnable when every step in its <code>needs</code> is finished in a readable state. Independent steps run together; the DAG decides.</li>
+  <li><b>Role step.</b> Check setup, render the prompt, reserve money, mark running, call <code>model.generate</code> with the full <code>NodeCall</code>, stream deltas to the bus, then in one transaction: write the result, the ledger row, settle the reservation, add to the run's cost and call count, emit.</li>
+  <li><b>Failure.</b> Map the error; if it is retryable and attempts remain, set <code>retry_at</code> with backoff (default 3 attempts, 1 s, factor 2) and reschedule. Otherwise fail the step; if the step is optional, skip it; else fail the run and put a "problem" item in the inbox.</li>
+  <li><b>Guards.</b> Per-run call cap (200) and per-node cap (10) stop runaway loops. Step timeouts abort the call through the signal.</li>
+  <li><b>Approval step.</b> Insert an approval and inbox items for people who may decide, mark the step waiting, set the run to waiting. <code>decide(approve | reject | changes)</code> writes the decision and sends a signal. "Changes" stores the note as feedback, supersedes the affected steps and re-runs only those.</li>
+  <li><b>Cancel.</b> Mark the run and its open steps cancelled, release held money, abort in-flight calls through their <code>AbortController</code>.</li>
+  <li><b>Finish.</b> The run's output is its output step's output. Put a "result" item in the inbox and resolve open items.</li>
+  <li><b>Crash recovery.</b> A row still "running" when the run is next advanced belongs to a dead worker: count it as an interrupted attempt and retry with the same idempotency key.</li>
+  <li><b>Facade.</b> <code>createConclave({ db, modules, masterKey, ... })</code> migrates, builds every service and returns them, with <code>startBackground()</code> (engine worker, outbox relay, notifier, health checks) and <code>stop()</code>.</li>
+  <li><b>Test harness.</b> <code>harness()</code> gives an in-memory instance with the mock model, a Research Brief workspace, and <code>settle()</code> that drains the worker and the relay.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>orchestrator.test.ts</code> covers: a run to approval and to the end; retry then success; failure then inbox item; request changes re-running only what is affected; cancel; budget refusal; recovery of an interrupted step; parallel steps.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 13</span>Events, outbox and realtime <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Every open screen updates by itself, and a dropped connection loses nothing.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 3, 12</dd>
+  <dt>Libraries</dt><dd><code>@fastify/websocket</code> (server side, Stage 15)</dd>
+  <dt>Files</dt><dd><code>packages/core/src/events.ts</code>, <code>apps/server/src/realtime.ts</code>, <code>apps/web/src/lib/realtime.ts</code></dd>
+  <dt>Tables</dt><dd><code>outbox</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><code>emit(q, topics, event)</code> inserts into <code>outbox</code> inside the caller's transaction.</li>
+  <li><code>OutboxRelay</code> polls unpublished rows in id order, publishes each to the in-process <code>EventBus</code> with a rising <code>seq</code>, and marks it published. <code>drain()</code> for tests.</li>
+  <li><code>EventBus</code> keeps the last 2,000 envelopes. <code>replay(topics, lastSeq)</code> returns what was missed, or null when the buffer no longer reaches that far.</li>
+  <li>Text deltas are transient: <code>publishTransient</code> goes straight to the bus and is never replayed.</li>
+  <li>WebSocket hub: on connect send <code>hello</code> with the current seq. A client subscribes to topics with its last seq. The server checks the caller may see each topic, replays what was missed, or answers <code>refetch</code>.</li>
+  <li>Web client: one socket, reconnect with backoff, <code>useTopics([...])</code>. Each event is applied straight into the TanStack Query cache (<code>setQueryData</code>) for runs, steps and inbox, and coarser lists are invalidated with a short debounce.</li>
+</ol>
+<h4>Design note</h4>
+<p>The bus is in-process, which is right for one container. For more than one, replace the bus with a shared one (Postgres LISTEN/NOTIFY first, NATS at scale) behind the same class. The outbox does not change.</p>
+<div class="done"><b>Done when.</b> A test shows an event is published only if its transaction commits, and a client that reconnects with an old seq gets the missed events in order.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 14</span>Inbox and notifications <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> One place where everything that needs a person arrives, and respectful ways to be told about it.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 12, 13</dd>
+  <dt>Libraries</dt><dd><code>web-push</code> (browser push with VAPID keys) · <code>nodemailer</code> (digest email over SMTP)</dd>
+  <dt>Files</dt><dd><code>packages/core/src/notifications.ts</code>, <code>apps/web/public/sw.js</code>, <code>apps/web/src/lib/notify.ts</code></dd>
+  <dt>Tables</dt><dd><code>notification_prefs, notification_rules, push_subscriptions, push_keys</code>, plus delivery columns on <code>inbox_items</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>Inbox kinds: <code>approval, question, result, problem, budget</code>. Each item has a title, a body, a <b>path</b> through nested runs ("Research brief &gt; Editor &gt; needs approval"), and an action (<code>approve, answer, open, retry, reconnect</code>).</li>
+  <li>Per person: desktop notifications, push, email digest (off, daily, weekly, at a local hour), quiet hours, time zone.</li>
+  <li>Per workspace per person: all items, important only, or inbox only.</li>
+  <li>A background loop delivers pending items. Quiet hours hold ordinary items until they end; an approval marked <code>urgent</code> (a safety check) still goes through.</li>
+  <li>Push: one VAPID key pair per organisation, private key in the vault; only hosts on an allow-list of push services are contacted; a subscription that keeps failing is removed.</li>
+  <li>The digest groups unread items by workspace and links back with the public URL.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>notifications.test.ts</code> covers quiet hours across midnight and time zones, urgent items, per-workspace levels, push to a fake endpoint, and a digest sent once.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 15</span>API server <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> A REST API and a realtime socket where no route can exist without an access rule.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 7 to 14</dd>
+  <dt>Libraries</dt><dd>Fastify 5 · <code>@fastify/cookie</code> · <code>@fastify/cors</code> · <code>@fastify/static</code> · <code>@fastify/websocket</code> · zod 4 · <code>@node-saml/node-saml</code> and <code>@xmldom/xmldom</code> (SAML)</dd>
+  <dt>Files</dt><dd><code>apps/server/src/</code>: <code>main.ts</code>, <code>app.ts</code>, <code>config.ts</code>, <code>realtime.ts</code>, <code>auth/guard.ts</code>, <code>auth/oidc.ts</code>, <code>auth/saml.ts</code>, <code>routes/auth.ts</code>, <code>routes/org.ts</code>, <code>routes/work.ts</code>, <code>routes/notifications.ts</code>, <code>routes/hooks.ts</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Config</b> from the environment with Lite defaults: PGlite in <code>./data</code>, bound to localhost, no outside services. When the server listens beyond localhost, generate a setup code and print it; the first owner needs it.</li>
+  <li><b>The guard.</b> Every <code>/v1</code> route declares <code>config.guard</code>: <code>{ auth: "public" }</code> or <code>{ auth: "user", perm?, workspace? }</code>. A <code>preHandler</code> hook refuses any route without one, and a test fails if one is added without it. Workspace-scoped permissions resolve the workspace from the URL (directly, from a task, or from an approval).</li>
+  <li><b>Who is calling.</b> <code>Authorization: Bearer cnc_...</code> for tokens; otherwise the session cookie (HttpOnly, SameSite=Lax, Secure when the public URL is https).</li>
+  <li><b>CSRF.</b> Browser requests that change data must send <code>x-requested-with: conclave</code>. A cross-site form cannot set it.</li>
+  <li><b>Errors.</b> One error handler turns <code>ConclaveError</code> and zod errors into RFC 9457 problem details (<code>type, title, status, detail, errors</code>).</li>
+  <li><b>Validation.</b> zod schemas for every body and query. Let the service do domain validation so messages can name the step or field.</li>
+  <li><b>Idempotency.</b> POSTs that start work accept <code>Idempotency-Key</code>; the same key returns the first answer.</li>
+  <li><b>Rate limits.</b> A small in-memory limiter on sign-in, SAML, pairing and callback routes.</li>
+  <li><b>Sign-in providers.</b> OIDC with PKCE and state for Google, GitHub and any issuer (discovery document). SAML with a signed assertion, audience check, one-time request ids within ten minutes, and certificate expiry warnings.</li>
+  <li><b>Static web app.</b> Serve <code>apps/web/dist</code> with a fallback to <code>index.html</code> for client routes. CORS only for localhost dev origins.</li>
+  <li><b>Health.</b> <code>GET /v1/health</code> for the container health check.</li>
+  <li><b>Shutdown.</b> On SIGINT and SIGTERM: close the app, stop the worker and relay, close the database, with a five-second hard stop.</li>
+</ol>
+<p>Appendix X3 lists every route.</p>
+<div class="done"><b>Done when.</b> <code>app.test.ts</code> walks setup, sign-in, a connection, a workspace, a task and an approval over HTTP; checks 401, 403 and 404 cases; and asserts every registered route has a guard.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 16</span>Web app: shell and core screens <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> A person who has never read the documentation connects a model, creates a workspace, runs a task and approves it.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stage 15</dd>
+  <dt>Libraries</dt><dd>React 19 · Vite 8 with <code>@vitejs/plugin-react</code> · TanStack Query 5 (server state) · TanStack Router 1 (typed routes) · Tailwind CSS 4 with <code>@tailwindcss/vite</code> · <code>@fontsource-variable/inter</code> and <code>@fontsource/jetbrains-mono</code> (fonts bundled, no outside requests) · <code>@simplewebauthn/browser</code></dd>
+  <dt>Files</dt><dd><code>apps/web/src/</code>: <code>main.tsx</code>, <code>styles.css</code>, <code>lib/</code> (api, auth, realtime, theme, format, palette, notify), <code>ui/</code> (index, icons), <code>shell/</code> (AuthGate, AppShell, Sidebar, CommandPalette), <code>features/</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Design tokens</b> in <code>styles.css</code> as CSS variables for light and dark (<code>data-theme</code> on the root), mapped into Tailwind with <code>@theme inline</code>: surfaces, lines, three ink levels, accent, good, warn, bad, nine tile palettes, and five chart series colours. Never hard-code a colour in a component.</li>
+  <li><b>UI kit</b> (<code>ui/index.tsx</code>): <code>Button</code> (six variants, three sizes), <code>Pill</code>, <code>StatusPill</code> (one table from status to label and tone), <code>Tile</code>, <code>Card</code>, <code>SectionTitle</code>, <code>Field</code>, <code>Input</code>, <code>Textarea</code>, <code>Select</code>, <code>Segmented</code>, <code>ChipGroup</code>, <code>ErrorNote</code>, <code>Empty</code>, <code>Progress</code>, <code>PageHeader</code>.</li>
+  <li><b>API client</b> (<code>lib/api.ts</code>): one <code>request()</code> that sends the CSRF header, parses problem details into an <code>ApiError</code>, and calls a signed-out handler on 401. One typed function per route, using the contract's DTOs.</li>
+  <li><b>Auth</b>: <code>AuthGate</code> loads <code>/v1/auth/state</code> and shows setup, sign-in, the second step or an invite; inside the app <code>useMe()</code>, <code>useCan(perm)</code> and <code>useWorkspaceCan(ws, perm)</code> decide what to offer. The server still checks every call.</li>
+  <li><b>Shell</b>: a sidebar (search, New task, Home, Inbox with a count, workspaces with status, Connections, Insights, Settings, the person and theme toggle) that becomes a drawer under 768 px; a command palette on Ctrl or Cmd K.</li>
+  <li><b>Screens, in this order:</b>
+    <table>
+      <tr><th style="width:24%">Screen</th><th>What it must do</th></tr>
+      <tr><td>Home</td><td>Onboarding checklist until the first result; "Needs you" with inline approve; "Running now" with progress; workspaces with spend</td></tr>
+      <tr><td>Connections</td><td>Grouped by port; status pill, month spend, used-by; test, turn off, delete; add form built from the manifest, with what the module may reach</td></tr>
+      <tr><td>New workspace</td><td>Guided questions with a live preview, a template, an import, or blank; choose the default node</td></tr>
+      <tr><td>Workspace · Tasks</td><td>Brief form from the task type's fields, an estimate before running, a filterable list, and the task panel</td></tr>
+      <tr><td>Task panel</td><td>Live steps with streamed text, the approval box, the result with copy, the brief, cost against the limit, cancel, and "Open trace"</td></tr>
+      <tr><td>Workspace · Team</td><td>Each role, the node that fills it (connection plus model, tool, skill or workflow), instructions, month statistics</td></tr>
+      <tr><td>Workspace · Workflows</td><td>Task types as cards; opens the node editor (Stage 17)</td></tr>
+      <tr><td>Workspace · Library, Activity, Settings</td><td>Finished results; every task with cost; budgets, members, export</td></tr>
+      <tr><td>Inbox</td><td>Filter by kind and workspace; approve, answer, open; mark read</td></tr>
+      <tr><td>Settings</td><td>Profile, security (password, passkeys, two-factor), notifications, members and invites, access tokens, single sign-on, devices</td></tr>
+    </table></li>
+  <li><b>Accessibility from the start</b>: real buttons and links, labels on every field, <code>aria-expanded</code> and <code>aria-current</code>, visible focus, reduced-motion support, no sideways page scroll at phone width, and scrollable regions that take keyboard focus.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>scripts/smoke.mjs</code> passes against a running instance, and a new person completes the first task from the Home checklist without help.</div>
+</section>
+
+<!-- ===================================================== PART C -->
+<div class="part"><div class="k">Part C</div><h2>Composition and interoperability</h2><p>Stages 17 to 28 turn the product into a platform: people compose their own workflows, unlike outside systems join through the same call path, and the whole run can be seen and governed.</p></div>
+
+<section class="stage">
+<h2><span class="n">STAGE 17</span>Node editor <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Build and change a workflow on a canvas, with a side panel for each step, without writing JSON.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 10, 16</dd>
+  <dt>Libraries</dt><dd>None added. The canvas is hand-built with SVG and pointer events, which keeps the bundle small and the keyboard behaviour under control</dd>
+  <dt>Files</dt><dd><code>apps/web/src/features/workspaces/workflows/editor/</code>: <code>WorkflowEditor.tsx</code>, <code>Canvas.tsx</code>, <code>Inspector.tsx</code>, <code>AddMenu.tsx</code>, <code>Logic.tsx</code>, <code>graph.ts</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><code>graph.ts</code>: pure functions from a workflow definition to nodes and edges and back; auto-layout by depth; add, remove, connect, rename a step and fix every reference to it.</li>
+  <li>Canvas: pan, zoom, drag nodes, drag from a node's dot to another to say "runs after", a dotted grid that follows pan and zoom, sticky notes, coloured connectors with a legend.</li>
+  <li>Keyboard: arrow keys move the selected node; Delete removes; everything dragging can do is also in the inspector's "Runs after" list.</li>
+  <li>Inspector: role and node picker, prompt with insertable variables, brief fields, output format, timeout, retries, optional, turn off.</li>
+  <li>Add menu with search, grouped by kind (model, tool, approval, logic, workspace, agent, automation).</li>
+  <li>Undo and redo as a stack of definitions. Save validates on the server and shows errors on the step they name. A blank workspace opens straight in the editor.</li>
+</ol>
+<div class="done"><b>Done when.</b> A workflow built only with the keyboard saves, runs, and reloads with the same layout.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 18</span>Tool port and the MCP dock <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Any MCP server's tools become nodes a step can call.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 5, 12</dd>
+  <dt>Libraries</dt><dd><code>@modelcontextprotocol/sdk</code> (the official client; Streamable HTTP with a fallback to SSE)</dd>
+  <dt>Files</dt><dd><code>modules/mcp</code>; the <code>tool</code> step in <code>workflow.ts</code>; <code>runToolStep</code> in the orchestrator</dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>Module config: server URL, optional bearer token, price per call. Egress is the server's host.</li>
+  <li><code>listTools</code> maps MCP tools to <code>ToolInfo</code> with their JSON input schema. Tools that write are <code>sensitive</code> by default until reviewed.</li>
+  <li><code>call</code> passes arguments, returns structured content, maps MCP errors to contract codes and honours the abort signal.</li>
+  <li>Tool step: a role on <code>tool@1</code> whose node is the tool name; arguments are templates. Reserve the price per call, call, charge it as "estimated".</li>
+  <li>Use the official SDK rather than writing the protocol. MCP keeps moving (versions, authorisation, transports); the SDK tracks it.</li>
+</ol>
+<div class="done"><b>Done when.</b> The module passes conformance against a fake MCP server, and <code>tools.test.ts</code> runs a workflow with a tool step followed by a model step.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 19</span>Branching, connectors and loops <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Workflows decide, not only proceed.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 12, 17</dd>
+  <dt>Files</dt><dd><code>packages/contract/src/conditions.ts</code>, the logic step kinds in <code>workflow.ts</code>, <code>graph</code>, <code>plan</code> and <code>progressLoops</code> in the orchestrator, <code>Logic.tsx</code> in the editor; design in <code>docs/workflow-logic.md</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Logic steps</b> (they cost nothing):
+    <ul>
+      <li><b>If / Switch</b>: cases made of rules; first match or every match; Else.</li>
+      <li><b>AI router</b> (<code>classify</code>): a model picks one of your categories; an answer that names none goes to Other.</li>
+      <li><b>Merge</b>: first input with text, all joined, or a JSON object by step.</li>
+      <li><b>Text</b>: a template, no model.</li>
+      <li><b>Stop</b>: end as done with a result, or as failed with a reason.</li>
+    </ul></li>
+  <li><b>Connectors</b> between steps: Always; Only if (rules on the output or a JSON field); Otherwise; On failure (taken only after retries are used up, and then the failure counts as handled). A connector can carry an instruction for the next step.</li>
+  <li><b>Rules</b> (<code>testCondition</code>): contains, equals, starts with, matches, is empty, number comparisons, on the text or a JSON path. Pure functions shared by server and editor.</li>
+  <li><b>Deciding</b> (<code>connectorTaken</code>): each connector is undecided, taken or not taken. A step whose incoming connectors are all not taken becomes <code>not_taken</code>, and that flows downstream. Where branches meet, a step waits for all, any, or the first.</li>
+  <li><b>Loops.</b> A loop connector sends work back to an earlier step until rules hold, up to a round limit (1 to 20, default 3). Each round supersedes the last round's rows, and <code>{{loop.index}}</code> and the previous output are available. At the limit, carry on with the last round or fail, as chosen.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>logic.test.ts</code> covers every connector kind, joins, a router picking each output, and loops ending by rule and by limit. Logic steps write no ledger rows.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 20</span>Workspace steps (sub-tasks) <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> A workflow can run another workspace's task type, or its own, and carry on with the result. This is what makes workspaces composable.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 12, 19</dd>
+  <dt>Files</dt><dd><code>startCall</code>, <code>progressCalls</code>, <code>childFinished</code>, <code>cancelTree</code>, <code>path</code> in the orchestrator; <code>truncateWorkflow</code> in the contract</dd>
+  <dt>Columns</dt><dd><code>runs.parent_run_id, parent_step_id, root_run_id, depth, iteration</code></dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li>The step names a workspace (or "self"), a task type, and inputs as templates. Optional "run up to this step".</li>
+  <li><b>Repeat modes</b>: a fixed number of times; once for each item of a list; until the output contains some text.</li>
+  <li><b>Permission.</b> The sub-task runs as the person who started the parent, and only if that person may run tasks in the target workspace.</li>
+  <li><b>Budget.</b> Each sub-task gets a share of what is left of the parent's limit (after cost, holds and money already committed to siblings). Its cost is added to the parent's step and run when it finishes.</li>
+  <li><b>Guards.</b> At most 5 levels deep; at most 100 sub-tasks per task. A workflow may call itself only if the inner run stops before reaching that call; the editor refuses one that never would.</li>
+  <li><b>Lifecycle.</b> A child finishing wakes its parent. Cancelling a task cancels everything under it. A child's approval reaches the inbox with the full path, and the parent reports once, at the end.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>nesting.test.ts</code> covers cross-workspace calls, "run up to", each repeat mode, recursion and its guard, depth and count caps, budget shares, cancel of a tree, and approval paths.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 21</span>Agent and Workflow ports <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> Hand work to an outside agent or workflow engine and wait as long as it takes, across restarts, without holding a worker.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 2, 4, 12</dd>
+  <dt>Files</dt><dd><code>AgentPortV1</code>, <code>WorkflowPortV1</code> in <code>ports.ts</code>; <code>agent</code> and <code>automation</code> steps; <code>startExternal</code>, <code>watch</code>, <code>progressExternal</code>, <code>applyExternal</code>, <code>completeExternal</code>, <code>failExternal</code>, <code>openQuestion</code>, <code>answerAgent</code>, <code>deliverCallback</code> in the orchestrator; <code>routes/hooks.ts</code>; <code>QuestionPanel.tsx</code>; design in <code>docs/agent-workflow-ports.md</code></dd>
+  <dt>Tables</dt><dd><code>external_callbacks</code> (token hash, run, step, used)</dd>
+</dl>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Start.</b> Reserve the step's cap, or the connection's prices (per call plus per minute) over the whole timeout. Call <code>startRun</code> or <code>trigger</code>. Write the handle or execution into the step's <code>input</code> as the checkpoint. Mark the step <code>waiting</code> and return; the worker is free.</li>
+  <li><b>Agents.</b> A watcher in the worker process reads <code>streamEvents</code>. Progress lines are written to the step (last 20 kept, flushed at most once a second). A question, the result or a failure goes through an engine <b>signal</b>, so the run's own worker applies it under its lease.</li>
+  <li><b>Questions.</b> <code>needs_input</code> opens one inbox item of kind "question" with the full path. The answer is sent with <code>provideInput</code> and the watch resumes. The same question seen again is not asked twice. A step may instead be set to fail on questions.</li>
+  <li><b>Workflows.</b> If <code>trigger</code> returns "running", poll with backoff from 2 s to once a minute, or wait for a callback. The callback URL carries a 256-bit token; only its hash is stored and it works once.</li>
+  <li><b>Restarts.</b> Waiting steps are re-checked every 30 s. A worker that restarted picks the watch up again; the port contract requires <code>streamEvents</code> to work on a run already under way and to yield a finished run's final event again.</li>
+  <li><b>Cost.</b> Charge what the system reports ("reported"), else the connection's prices for the time taken ("estimated").</li>
+  <li><b>Ending.</b> A timeout asks the outside system to stop and frees the held money. Cancel does the same; where a system cannot cancel, its result is ignored. Outside runs are not retried unless the step asks, because they are not idempotent.</li>
+  <li><b>UI.</b> The task panel shows "working outside" with the latest progress lines, the outside id, and the question box. The Team tab picks a skill or a workflow as the node.</li>
+</ol>
+<div class="done"><b>Done when.</b> <code>external.test.ts</code> covers: an agent run to the end; a question and its answer; fail-on-question; a restart in the middle; timeout with release; cancel; On failure catching it; polling; a callback that works once.</div>
+</section>
+
+<section class="stage">
+<h2><span class="n">STAGE 22</span>Module protocol and the docks <span class="have">IN REPO</span></h2>
+<div class="goal"><b>Goal.</b> The same module code runs inside the server, on its author's server, as a process the server starts, or on someone's computer. Only the transport and the security boundary differ.</div>
+<dl class="meta">
+  <dt>Depends on</dt><dd>Stages 5, 8, 21</dd>
+  <dt>Libraries</dt><dd><code>node:http</code>, <code>node:child_process</code>, <code>node:readline</code>, <code>node:crypto</code>. No dependency added</dd>
+  <dt>Files</dt><dd><code>packages/module-sdk/src/cmp.ts</code>; <code>modules/remote-dock</code>, <code>modules/sidecar-dock</code>, <code>modules/webhook-workflow</code>, <code>modules/sample-agent</code>; <code>apps/server/src/docks.test.ts</code></dd>
+</dl>
+<h4>The Conclave Module Protocol (CMP 1.0)</h4>
+<p>CMP is the contract between Conclave and its modules. It is JSON-RPC 2.0, which is a message format and not the point. Do not position it against MCP or A2A; those are adapters that sit behind ports.</p>
+<table>
+  <tr><th style="width:24%">Direction</th><th>Methods</th></tr>
+  <tr><td>Host to module</td><td><code>initialize</code> (answers with the manifest), <code>health</code>, <code>outsideVersion</code>, <code>discover</code>, <code>model.listModels</code>, <code>model.generate</code>, <code>tool.listTools</code>, <code>tool.call</code>, <code>agent.listSkills</code>, <code>agent.startRun</code>, <code>agent.events</code>, <code>agent.provideInput</code>, <code>agent.cancel</code>, <code>workflow.list</code>, <code>workflow.trigger</code>, <code>workflow.poll</code>, <code>workflow.callback</code>, <code>workflow.cancel</code>, and the <code>$/cancel</code> notification</td></tr>
+  <tr><td>Module to host (stdio)</td><td><code>host.fetch</code> (network calls pass the host's allow-list), <code>host.log</code></td></tr>
+</table>
+<h4>Build steps</h4>
+<ol>
+  <li><b>Dispatcher.</b> <code>createDispatcher(module)</code> turns method names into port calls, tracks in-flight calls for <code>$/cancel</code>, and encodes errors with the contract code and <code>retryable</code>.</li>
+  <li><b>Agent events over request and response.</b> <code>agent.events</code> is a long poll over a cursor (up to 20 s), so one method works over HTTP and stdio.</li>
+  <li><b>Serving.</b> <code>serveHttp(module, { secret })</code> and <code>serveStdio(module)</code> serve any <code>defineModule</code> module unchanged.</li>
+  <li><b>HTTP signing.</b> Every request carries a timestamp, a nonce and <code>v1=HMAC-SHA256(secret, "ts.nonce.body")</code>. Refuse requests older than five minutes, a nonce seen in the last ten, and secrets shorter than 32 characters. Sign every answer over the request's nonce. Plain http only for loopback.</li>
+  <li><b>Host side.</b> <code>httpClient</code>, <code>spawnClient</code> and <code>cmpInstance</code> give core an ordinary <code>ModuleInstance</code>. The version is checked at <code>initialize</code>.</li>
+  <li><b>Remote dock</b> (<code>conclave/remote</code>): URL, shared secret, prices.</li>
+  <li><b>Sidecar dock</b> (<code>conclave/sidecar</code>): a command the server starts without a shell and with a bare environment (no keys, no database URL). Only commands listed in <code>CONCLAVE_SIDECARS</code> may start. The module's <code>fetch</code> goes through the host. For real isolation make the command a container with no network.</li>
+  <li><b>Docked modules.</b> Testing a docked connection asks its module for its manifest, stores the ports it provides (so role pickers offer only fitting connections), and says so when a later test finds a different module, version or wider egress.</li>
+  <li><b>Webhook workflow dock</b> (<code>conclave/webhook-workflow</code>): POST the inputs as JSON; in "wait" mode the response is the result, in "callback" mode the workflow posts to the callback URL. With a secret, sign the request with HMAC. This already works with n8n, Zapier, Make, Activepieces and Windmill, with no module code.</li>
+  <li><b>Sample agent</b>: a module made only with the public SDK (two skills, two workflows) to use as a template and as the test target for every dock.</li>
+</ol>
+<div class="warn"><b>Trust.</b> A signature shows where a package came from and that it was not changed. It does not show the module is safe. The host must still enforce permissions, egress, resource limits and secret isolation for every dock.</div>
+<div class="done"><b>Done when.</b> <code>docks.test.ts</code> runs the sample agent through the remote and sidecar docks end to end, and shows a bad signature, a replayed nonce and an unlisted sidecar command are refused.</div>
+</section>

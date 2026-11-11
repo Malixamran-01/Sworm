@@ -6,13 +6,24 @@ import {
   loopRound,
   newId,
   NodeCallError,
+  portForStep,
   testCondition,
   toNodeError,
   topics,
+  traceparent,
   truncateWorkflow,
   validateBrief,
+  type PolicyDecisionDto,
+  type AgentEvent,
+  type AgentRunHandle,
+  type AgentStep,
   type ApprovalStep,
   type BranchStep,
+  type CallContext,
+  type ExternalStep,
+  type ReportedUsage,
+  type WorkflowExecution,
+  type WorkflowStatus,
   type ClassifyStep,
   type Edge,
   type Effort,
@@ -24,12 +35,16 @@ import {
   type InputField,
   type RoleStep,
   type ToolStep,
+  type LookupStep,
+  type KnowledgeSearchRequest,
+  type Passage,
   type RunDetailDto,
   type RunSummaryDto,
   type Step,
   type WorkflowDefinition,
   type WorkspaceStep,
 } from "@conclave/contract";
+import { createHash, randomBytes } from "node:crypto";
 import { json, num, type Db, type Queryable } from "@conclave/db";
 import type { AdvanceOutcome, ExecutionEngine, Signal } from "@conclave/engine";
 import { Access, isRole, type Principal } from "./access";
@@ -40,6 +55,7 @@ import { listActiveRuns, listRuns, loadInboxItem, loadRunDetail, loadRunSummary,
 import { budgetBlocked, ConclaveError, invalid, notFound, type Actor } from "./errors";
 import { emit, type EventBus } from "./events";
 import { listItems, render } from "./render";
+import { decide, Policies, type PolicyRule } from "./policies";
 import { monthStart } from "./workspaces";
 
 export interface OrchestratorOptions {
@@ -52,16 +68,51 @@ export interface OrchestratorOptions {
   maxSubtasks?: number;
   /** Retry policy for role steps that declare none. */
   defaultRetry?: { maxAttempts: number; backoffMs: number; factor: number };
+  /** Base URL outside engines call back to (Workflow port callbacks). */
+  publicUrl?: string;
+  /** How often a run with an agent at work is checked, so a restarted worker picks the watch up again. */
+  externalCheckMs?: number;
+  /** Loop guard: how many times one node may give an answer to exactly the same input in one task tree. */
+  maxIdenticalCalls?: number;
 }
 
 type Decision = "approve" | "reject" | "changes";
 /** Steps that call a node through a role. */
-type CallStep = RoleStep | ToolStep | ClassifyStep;
+type CallStep = RoleStep | ToolStep | LookupStep | ClassifyStep | ExternalStep;
 /** Steps that finish without calling anything: they run inside the advance loop. */
 type InstantStep = BranchStep | MergeStep | TextStep | StopStep;
 /** Finished states whose output later steps can read. A failed step's output is its error, for "On failure" connectors. */
 const READABLE = new Set(["succeeded", "skipped", "failed"]);
-const CAN_RETRY = (s: Step): s is CallStep => s.kind === "role" || s.kind === "tool" || s.kind === "classify";
+const CAN_RETRY = (s: Step): s is CallStep => s.kind === "role" || s.kind === "tool" || s.kind === "lookup" || s.kind === "classify" || s.kind === "agent" || s.kind === "automation";
+const isExternal = (s: Step): s is ExternalStep => s.kind === "agent" || s.kind === "automation";
+/** What each kind of role is filled with, for messages. */
+const PICK: Record<string, string> = { "model@1": "model", "tool@1": "tool", "agent@1": "agent skill", "workflow@1": "workflow", "knowledge@1": "source" };
+
+/** What an agent or automation step keeps in run_steps.input while it waits. */
+interface ExternalInput {
+  skill?: string;
+  workflow?: string;
+  text?: string;
+  data?: Record<string, unknown>;
+  handle?: AgentRunHandle;
+  execution?: WorkflowExecution;
+  /** Latest progress lines, newest last. */
+  progress?: string[];
+  /** The open question's approval id, while the agent waits for a person. */
+  asking?: string;
+  question?: string;
+  polls?: number;
+  nextCheckAt?: string;
+  cancelSent?: boolean;
+}
+
+/** A signal from a watcher or a callback about one outside run. */
+interface ExternalSignal {
+  stepId: string;
+  event?: AgentEvent;
+  status?: WorkflowStatus;
+  callback?: { body: unknown; headers: Record<string, string> };
+}
 
 interface RoleRow {
   key: string;
@@ -126,18 +177,27 @@ export class Orchestrator {
   /** In-flight calls per run, so cancel can abort them (TASK-005). */
   private readonly inflight = new Map<string, Set<AbortController>>();
   private readonly access = new Access();
+  /** Agent runs this process is watching, by step row id. */
+  private readonly watchers = new Map<string, AbortController>();
+  private readonly policies: Policies;
+  /** What the rules said about a step about to run, until it is written to the step row. */
+  private readonly decisions = new Map<string, PolicyDecisionDto>();
 
   constructor(db: Db, engine: ExecutionEngine, connections: Connections, bus: EventBus, opts: OrchestratorOptions = {}) {
     this.db = db;
     this.engine = engine;
     this.connections = connections;
     this.bus = bus;
+    this.policies = new Policies(db);
     this.opts = {
       maxCallsPerRun: opts.maxCallsPerRun ?? 200,
       maxCallsPerNode: opts.maxCallsPerNode ?? 10,
       maxDepth: opts.maxDepth ?? 5,
       maxSubtasks: opts.maxSubtasks ?? 100,
       defaultRetry: opts.defaultRetry ?? { maxAttempts: 3, backoffMs: 1_000, factor: 2 },
+      publicUrl: (opts.publicUrl ?? "http://localhost:8787").replace(/\/+$/, ""),
+      externalCheckMs: opts.externalCheckMs ?? 30_000,
+      maxIdenticalCalls: opts.maxIdenticalCalls ?? 3,
     };
   }
 
@@ -216,7 +276,7 @@ export class Orchestrator {
     const briefChars = Object.values(brief).join(" ").length;
     for (const step of tt.workflow.steps) {
       if (step.disabled) continue;
-      if (step.kind !== "role" && step.kind !== "tool" && step.kind !== "classify" && step.kind !== "workspace") continue;
+      if (step.kind !== "role" && step.kind !== "tool" && step.kind !== "lookup" && step.kind !== "classify" && step.kind !== "workspace" && !isExternal(step)) continue;
       // A sub-task's cost depends on the workflow it runs; its own history fills in once it has run.
       if (step.kind === "workspace") {
         unpriced++;
@@ -227,9 +287,16 @@ export class Orchestrator {
         if (!step.optional) unpriced++;
         continue;
       }
-      if (step.kind === "tool") {
+      if (step.kind === "tool" || step.kind === "lookup") {
         const conn = await this.connections.get(actor, role.connection_id).catch(() => null);
         upper += step.pricePerCallUsd ?? Number(conn?.config.pricePerCallUsd ?? 0);
+        continue;
+      }
+      if (isExternal(step)) {
+        const conn = await this.connections.get(actor, role.connection_id).catch(() => null);
+        const cap = step.maxCostUsd ?? (conn ? externalReserve(step, conn.config) : 0);
+        if (cap > 0) upper += cap;
+        else unpriced++;
         continue;
       }
       try {
@@ -270,11 +337,12 @@ export class Orchestrator {
         if (typeof target === "string") throw invalid([target]);
         continue;
       }
-      if (step.kind !== "role" && step.kind !== "tool" && step.kind !== "classify") continue;
+      const port = portForStep(step);
+      if (!port || !("role" in step)) continue;
       const role = roles.get(step.role);
       if (!role) throw invalid([`The workflow calls role "${step.role}", which this workspace does not have.`]);
       if ((!role.connection_id || !role.model) && !step.optional) {
-        throw invalid([`${role.name} has no node yet. Choose a connection and ${step.kind === "tool" ? "tool" : "model"} for it in Team.`]);
+        throw invalid([`${role.name} has no node yet. Choose a connection and ${PICK[port]} for it in Team.`]);
       }
     }
 
@@ -341,6 +409,7 @@ export class Orchestrator {
 
   private abortCalls(runIds: string[]): void {
     for (const id of runIds) for (const controller of this.inflight.get(id) ?? []) controller.abort();
+    if (runIds.length) void this.cancelExternal(runIds).catch((err) => console.warn("[orchestrator] could not cancel an outside run", err));
   }
 
   /** Answer an approval gate (TASK-004): approve, reject, or ask for changes in plain words. */
@@ -355,6 +424,11 @@ export class Orchestrator {
       );
       if (!approval) throw notFound("Approval");
       if (approval.decision) throw new ConclaveError(409, "Already decided", `This approval was already answered (${approval.decision}).`);
+      const [kind] = await q.query<{ kind: string }>(`select s.kind from approvals a join run_steps s on s.id = a.step_id where a.id = $1`, [approvalId]);
+      if (kind?.kind === "agent") {
+        if (input.decision === "changes") throw invalid(["Answer the question, or stop the agent."]);
+        if (input.decision === "approve" && !input.note?.trim()) throw invalid(["Write an answer for the agent."]);
+      }
       runId = approval.run_id;
       await q.query(`update approvals set decision = $2, note = $3, decided_by = $4, decided_at = now() where id = $1`, [
         approvalId,
@@ -387,7 +461,12 @@ export class Orchestrator {
       // Sub-tasks that finished may complete a workspace step or let the next repeat start.
       if (await this.progressCalls(state)) continue;
       // A finished loop end either sends the run round again or lets it carry on.
-      if (await this.progressLoops(state)) continue;
+      if (await this.progressLoops(state)) {
+        void this.cancelExternal([runId]).catch(() => {});
+        continue;
+      }
+      // Agents and outside workflows at work: timeouts, polls, and watches to pick up again.
+      if (await this.progressExternal(state)) continue;
       const plan = this.plan(state);
 
       if (plan.failed) {
@@ -514,6 +593,14 @@ export class Orchestrator {
           if (step.kind === "workspace") {
             const due = new Date(new Date(row.started_at ?? row.created_at).getTime() + step.timeoutMs);
             if (!callDeadline || due < callDeadline) callDeadline = due;
+          } else if (isExternal(step)) {
+            // Wake at the timeout, the next poll, or the next watch check, whichever comes first.
+            const info = (row.input ?? {}) as ExternalInput;
+            const due = new Date(row.started_at ?? row.created_at).getTime() + step.timeoutMs;
+            const check = info.nextCheckAt ? new Date(info.nextCheckAt).getTime() : now + this.opts.externalCheckMs;
+            const at = new Date(Math.max(now + 250, Math.min(due, check)));
+            if (!callDeadline || at < callDeadline) callDeadline = at;
+            if (info.asking) waiting = true;
           } else waiting = true;
           break;
         case "pending": {
@@ -570,7 +657,12 @@ export class Orchestrator {
 
   private async applySignals(runId: string, signals: Signal[]): Promise<void> {
     for (const signal of signals) {
+      if (signal.name === "external") {
+        await this.applyExternal(runId, signal.payload as unknown as ExternalSignal);
+        continue;
+      }
       if (signal.name !== "approval") continue;
+      if (await this.answerAgent(runId, signal.payload as { approvalId: string; decision: Decision; note: string })) continue;
       const { approvalId, decision, note } = signal.payload as { approvalId: string; decision: Decision; note: string };
       await this.db.tx(async (q) => {
         const [run] = await q.query<RunRow>(`select * from runs where id = $1 for update`, [runId]);
@@ -611,9 +703,31 @@ export class Orchestrator {
         await this.touchParent(q, run);
       });
     }
+    // Changes requested may have superseded an agent at work: ask it to stop.
+    if (signals.some((s) => s.name === "approval")) void this.cancelExternal([runId]).catch(() => {});
   }
 
   private async executeStep(state: LoadedRun, step: Step, pending: StepRow | undefined, heartbeat: () => Promise<void>): Promise<void> {
+    const key = `${state.run.id}:${step.key}`;
+    try {
+      await this.runStep(state, step, pending, heartbeat);
+    } finally {
+      // Keep what the rules said with the attempt it was said about, for the trace.
+      const decision = this.decisions.get(key);
+      this.decisions.delete(key);
+      if (decision) {
+        await this.db
+          .query(
+            `update run_steps set policy = $3::jsonb
+              where id = (select id from run_steps where run_id = $1 and step_key = $2 order by attempt desc, created_at desc limit 1)`,
+            [state.run.id, step.key, json(decision)],
+          )
+          .catch(() => {});
+      }
+    }
+  }
+
+  private async runStep(state: LoadedRun, step: Step, pending: StepRow | undefined, heartbeat: () => Promise<void>): Promise<void> {
     if (step.disabled) return this.passThrough(state, step, pending);
     switch (step.kind) {
       case "approval":
@@ -621,7 +735,11 @@ export class Orchestrator {
       case "workspace":
         return this.startCall(state, step, pending);
       case "tool":
+      case "lookup":
         return this.runToolStep(state, step, pending, heartbeat);
+      case "agent":
+      case "automation":
+        return this.startExternal(state, step, pending);
       case "role":
       case "classify":
         return this.runRoleStep(state, step, pending, heartbeat);
@@ -744,16 +862,15 @@ export class Orchestrator {
 
     if (await this.skipIfOptional(run, step, role, pending)) return;
     // Resolve everything that can fail before any money is reserved.
-    const setupError = await this.checkSetup(run, step, role);
+    const gate = await this.gate(state, step, role);
     const attempt = pending?.attempt ?? (await this.nextAttempt(this.db, run.id, step.key));
     const stepId = pending?.id ?? newId();
-    if (setupError) {
-      await this.db.tx(async (q) => {
+    const failEarly = (message: string, code: string | null) =>
+      this.db.tx(async (q) => {
         if (!pending) await this.insertStep(q, run, step, attempt, { status: "pending", id: stepId });
-        await this.failStep(q, run, step, stepId, attempt, setupError, null);
+        await this.failStep(q, run, step, stepId, attempt, message, code);
       });
-      return;
-    }
+    if (gate) return void (await failEarly(gate.message, gate.code));
 
     const { instance, row: conn } = await this.connections.instance(actor, role!.connection_id!);
     const model = instance.ports.model!;
@@ -775,6 +892,8 @@ export class Orchestrator {
       const previous = [...state.rows].reverse().find((r) => r.step_key === step.key && r.status === "superseded" && r.output);
       prompt += `\n\n---\nA reviewer asked for changes to your previous version:\n${feedback}\n\nYour previous version:\n${previous?.output ?? "(not available)"}\n\nWrite the revised version in full.`;
     }
+    const repeated = await this.repeated(run, conn.id, { prompt, model: role!.model });
+    if (repeated) return void (await failEarly(repeated, "loop_detected"));
     const system = role!.instructions || undefined;
     const reserveUsd =
       (await historicalP90(this.db, run.task_type_id, step.key)) ??
@@ -826,13 +945,14 @@ export class Orchestrator {
           call: {
             callId: stepId,
             runId: run.id,
-            parentCallId: null,
+            // The workspace step that started this task, so calls chain across the nest.
+            parentCallId: run.parent_step_id,
             depth: run.depth,
             nodeId: conn.id,
             input: { text: prompt },
             budget: { usd: reserveUsd },
             permissions: [`call:node:${conn.id}`],
-            trace: { traceparent: `00-${run.id.replace(/-/g, "")}-${stepId.replace(/-/g, "").slice(0, 16)}-01` },
+            trace: { traceparent: traceparent(run.root_run_id, stepId) },
             idempotencyKey,
           },
           signal: controller.signal,
@@ -925,7 +1045,11 @@ export class Orchestrator {
   }
 
   /** A tool step calls one tool of the Tool-port node filling the role (WF-001, MOD-004). */
-  private async runToolStep(state: LoadedRun, step: ToolStep, pending: StepRow | undefined, heartbeat: () => Promise<void>): Promise<void> {
+  /**
+   * A tool call or a knowledge lookup: one request to a node that answers at
+   * once. Both are priced per call unless the node reports what it cost.
+   */
+  private async runToolStep(state: LoadedRun, step: ToolStep | LookupStep, pending: StepRow | undefined, heartbeat: () => Promise<void>): Promise<void> {
     const { run } = state;
     const actor: Actor = { orgId: run.org_id, userId: run.created_by ?? "" };
     const [role] = await this.db.query<RoleRow>(`select key, name, instructions, connection_id, model, effort from roles where workspace_id = $1 and key = $2`, [
@@ -933,7 +1057,7 @@ export class Orchestrator {
       step.role,
     ]);
     if (await this.skipIfOptional(run, step, role, pending)) return;
-    const setupError = await this.checkSetup(run, step, role);
+    const gate = await this.gate(state, step, role);
     const attempt = pending?.attempt ?? (await this.nextAttempt(this.db, run.id, step.key));
     const stepId = pending?.id ?? newId();
     const failEarly = (message: string, code: string | null) =>
@@ -941,24 +1065,40 @@ export class Orchestrator {
         if (!pending) await this.insertStep(q, run, step, attempt, { status: "pending", id: stepId });
         await this.failStep(q, run, step, stepId, attempt, message, code);
       });
-    if (setupError) return void (await failEarly(setupError, null));
+    if (gate) return void (await failEarly(gate.message, gate.code));
 
     const { instance, row: conn } = await this.connections.instance(actor, role!.connection_id!);
+    const lookup = step.kind === "lookup";
     const tools = instance.ports.tool;
-    if (!tools) return void (await failEarly(`${conn.name} does not provide tools.`, "invalid_request"));
+    const knowledge = instance.ports.knowledge;
+    if (lookup ? !knowledge : !tools) return void (await failEarly(`${conn.name} does not provide ${lookup ? "knowledge" : "tools"}.`, "invalid_request"));
     const toolName = role!.model!;
     const outputs = this.stepOutputs(state.rows);
-    let args: Record<string, unknown> = Object.fromEntries(Object.entries(step.args).map(([k, v]) => [k, render(v, { input: run.brief, steps: outputs, ...this.loopVars(state, step.key) })]));
+    // A lookup's node is one source, or "*" for every source of the connection.
+    let args: Record<string, unknown> = step.kind === "lookup"
+      ? { query: render(step.query, { input: run.brief, steps: outputs, ...this.loopVars(state, step.key) }).trim(), limit: step.limit, ...(toolName === "*" ? {} : { sources: [toolName] }) }
+      : Object.fromEntries(Object.entries(step.args).map(([k, v]) => [k, render(v, { input: run.brief, steps: outputs, ...this.loopVars(state, step.key) })]));
     // Arguments written for one tool often name the same field differently: map a single value onto
     // the tool's only required text parameter.
-    const info = (await this.connections.runtime.tools(conn.id, instance).catch(() => [])).find((t) => t.name === toolName);
+    const info = lookup ? undefined : (await this.connections.runtime.tools(conn.id, instance).catch(() => [])).find((t) => t.name === toolName);
+    // Nothing to look for (an empty brief field, say): pass on nothing, without a call.
+    if (lookup && !args.query) {
+      return void (await this.db.tx(async (q) => {
+        if (!pending) await this.insertStep(q, run, step, attempt, { status: "pending", id: stepId });
+        await this.updateStep(q, run, stepId, `status = 'succeeded', output = '', started_at = now(), finished_at = now(), role_key = $2, connection_id = $3`, [role!.key, conn.id]);
+        await this.emitRun(q, run.id);
+      }));
+    }
     const props = (info?.inputSchema?.properties ?? {}) as Record<string, { type?: string }>;
     const required = ((info?.inputSchema?.required ?? []) as string[]).filter((k) => props[k]?.type === "string");
     const values = Object.values(args);
     if (info && Object.keys(args).some((k) => !(k in props)) && required.length === 1 && values.length === 1) args = { [required[0]!]: values[0] };
 
+    const stepInput = lookup ? { lookup: toolName, args } : { tool: toolName, args };
+    const repeated = await this.repeated(run, conn.id, stepInput);
+    if (repeated) return void (await failEarly(repeated, "loop_detected"));
     const price = step.pricePerCallUsd ?? (Number(conn.config.pricePerCallUsd ?? 0) || 0);
-    const nodeLabel = `${role!.name} · ${conn.name} · ${toolName}`;
+    const nodeLabel = `${role!.name} · ${conn.name} · ${toolName === "*" ? "all sources" : toolName}`;
     const idempotencyKey = `${run.id}:${step.key}:${attempt}`;
     await this.db.tx(async (q) => {
       if (!pending) await this.insertStep(q, run, step, attempt, { status: "pending", id: stepId });
@@ -967,7 +1107,7 @@ export class Orchestrator {
         run,
         stepId,
         `status = 'running', started_at = now(), role_key = $2, connection_id = $3, node_label = $4, input = $5::jsonb, idempotency_key = $6`,
-        [role!.key, conn.id, nodeLabel, json({ tool: toolName, args }), idempotencyKey],
+        [role!.key, conn.id, nodeLabel, json(stepInput), idempotencyKey],
       );
       await q.query(`update runs set status = 'running', started_at = coalesce(started_at, now()) where id = $1 and status in ('queued', 'waiting')`, [run.id]);
       await this.emitRun(q, run.id);
@@ -991,40 +1131,55 @@ export class Orchestrator {
     calls.add(controller);
     const started = Date.now();
     try {
-      const result = await tools.call(toolName, args, {
+      const callCtx: CallContext = {
         call: {
           callId: stepId,
           runId: run.id,
-          parentCallId: null,
+          // The workspace step that started this task, so calls chain across the nest.
+            parentCallId: run.parent_step_id,
           depth: run.depth,
           nodeId: conn.id,
           input: { data: args },
           budget: { usd: price },
-          permissions: [`call:node:${conn.id}`],
-          trace: { traceparent: `00-${run.id.replace(/-/g, "")}-${stepId.replace(/-/g, "").slice(0, 16)}-01` },
+          permissions: lookup ? [`call:node:${conn.id}`] : [`call:node:${conn.id}`, `call:tool:${conn.id}:${toolName}`],
+          trace: { traceparent: traceparent(run.root_run_id, stepId) },
           idempotencyKey,
         },
         signal: controller.signal,
         emit: () => {},
-      });
-      const data = result.data as { text?: string } | string | null;
-      const text = typeof data === "string" ? data : typeof data?.text === "string" && data.text ? data.text : JSON.stringify(data ?? null);
+      };
+      let text: string;
+      let reported: ReportedUsage | undefined;
+      if (lookup) {
+        const found = await knowledge!.search(args as unknown as KnowledgeSearchRequest, callCtx);
+        text = formatPassages((found.passages ?? []).slice(0, step.limit));
+        reported = found.usage;
+      } else {
+        const result = await tools!.call(toolName, args, callCtx);
+        const data = result.data as { text?: string } | string | null;
+        text = typeof data === "string" ? data : typeof data?.text === "string" && data.text ? data.text : JSON.stringify(data ?? null);
+      }
+      // A node that says what the call cost is believed; otherwise the per-call price the user set applies (COST-004, COST-006).
+      const knownCost = typeof reported?.costUsd === "number";
+      const cost = knownCost ? Math.max(0, reported!.costUsd!) : price;
+      const costSource = knownCost ? "reported" : "estimated";
       await this.db.tx(async (q) => {
         const [live] = await q.query<{ status: string }>(`select status from runs where id = $1 for update`, [run.id]);
         if (live?.status === "cancelled") return;
-        // Tools report no token usage; their cost is the per-call price the user set (COST-004, COST-006).
-        await this.updateStep(q, run, stepId, `status = 'succeeded', output = $2, cost_usd = $3, cost_source = 'estimated', latency_ms = $4, finished_at = now()`, [
-          text,
-          price,
-          Date.now() - started,
-        ]);
-        await settle(q, reservationId, price);
+        await this.updateStep(
+          q,
+          run,
+          stepId,
+          `status = 'succeeded', output = $2, cost_usd = $3, cost_source = $5, latency_ms = $4, tokens_in = $6, tokens_out = $7, finished_at = now()`,
+          [text, cost, Date.now() - started, costSource, Math.round(reported?.inputTokens ?? 0), Math.round(reported?.outputTokens ?? 0)],
+        );
+        await settle(q, reservationId, cost);
         await q.query(
           `insert into usage_ledger (id, org_id, workspace_id, run_id, step_id, connection_id, role_key, module_id, model, cost_usd, cost_source, reservation_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'estimated', $11)`,
-          [newId(), run.org_id, run.workspace_id, run.id, stepId, conn.id, role!.key, conn.moduleId, toolName, price, reservationId],
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $11)`,
+          [newId(), run.org_id, run.workspace_id, run.id, stepId, conn.id, role!.key, conn.moduleId, toolName, cost, reservationId, costSource],
         );
-        await q.query(`update runs set cost_usd = cost_usd + $2, call_count = call_count + 1 where id = $1`, [run.id, price]);
+        await q.query(`update runs set cost_usd = cost_usd + $2, call_count = call_count + 1 where id = $1`, [run.id, cost]);
         await this.emitRun(q, run.id);
       });
     } catch (err) {
@@ -1046,9 +1201,87 @@ export class Orchestrator {
   }
 
   /** Problems that make a role step impossible, checked before money is reserved. */
+  /**
+   * Everything that can stop a call before money is held: the setup, the
+   * caps, and the rules about what this task may use (SRS 4.12).
+   */
+  private async gate(state: LoadedRun, step: CallStep, role: RoleRow | undefined): Promise<{ message: string; code: string | null } | null> {
+    const setup = await this.checkSetup(state.run, step, role);
+    if (setup) return { message: setup, code: null };
+    const decision = await this.policyFor(state, step, role!);
+    this.decisions.set(`${state.run.id}:${step.key}`, decision);
+    return decision.allowed ? null : { message: decision.reason, code: "forbidden" };
+  }
+
+  /**
+   * Ask the rules about one call. The organisation's rules, the limits of
+   * every workspace above this task, and this workspace's own all apply; the
+   * strictest wins, so work that is handed down can only lose permissions.
+   */
+  private async policyFor(state: LoadedRun, step: CallStep, role: RoleRow): Promise<PolicyDecisionDto> {
+    const { run } = state;
+    const connectionId = role.connection_id!;
+    const [conn] = await this.db.query<{ name: string }>(`select name from connections where id = $1`, [connectionId]);
+    const tool = step.kind === "tool" ? role.model : null;
+    let sensitive = false;
+    if (tool) {
+      try {
+        const { instance } = await this.connections.instance(actorOf(run), connectionId);
+        sensitive = (await this.connections.runtime.tools(connectionId, instance)).find((t) => t.name === tool)?.sensitive === true;
+      } catch {
+        // A connection that cannot list its tools fails at the call, with its own reason.
+      }
+    }
+    const { org, workspace } = await this.policies.sourcesFor(this.db, run.org_id, run.workspace_id);
+    const inherited = new Map<string, PolicyRule[]>();
+    for (const rule of run.inherited?.rules ?? []) inherited.set(rule.source, [...(inherited.get(rule.source) ?? []), rule]);
+    return decide([org, ...inherited.values(), workspace], {
+      connectionId,
+      connectionName: conn?.name ?? "this connection",
+      tool,
+      sensitive,
+      approvedBefore: this.approvedBefore(state, step.key),
+    });
+  }
+
+  /** True when a person approved a step that leads to this one, in this task. */
+  private approvedBefore(state: LoadedRun, key: string): boolean {
+    const edges = edgesOf(state.def);
+    const kinds = new Map(state.def.steps.map((s) => [s.key, s.kind]));
+    const current = this.current(state.rows);
+    const seen = new Set<string>([key]);
+    const queue = [key];
+    while (queue.length) {
+      const at = queue.shift()!;
+      for (const edge of edges) {
+        if (edge.to !== at || seen.has(edge.from)) continue;
+        seen.add(edge.from);
+        if (kinds.get(edge.from) === "approval" && current.get(edge.from)?.status === "succeeded") return true;
+        queue.push(edge.from);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Loop guard (MESH-012): a node that has already answered exactly this
+   * input several times in this task tree is being asked in circles. Failed
+   * attempts do not count, so retries are not mistaken for a loop.
+   */
+  private async repeated(run: RunRow, connectionId: string, input: unknown): Promise<string | null> {
+    const [seen] = await this.db.query<{ n: string; name: string | null }>(
+      `select count(*) as n, (select name from connections where id = $2) as name
+         from run_steps s join runs r on r.id = s.run_id
+        where r.root_run_id = $1 and s.connection_id = $2 and s.status = 'succeeded' and s.input @> $3::jsonb`,
+      [run.root_run_id, connectionId, json(input)],
+    );
+    if (num(seen?.n) < this.opts.maxIdenticalCalls) return null;
+    return `Stopped: ${seen?.name ?? "this node"} already answered exactly this input ${num(seen?.n)} times in this task. Asking again would give the same answer, so this looks like a loop.`;
+  }
+
   private async checkSetup(run: RunRow, step: CallStep, role: RoleRow | undefined): Promise<string | null> {
     if (!role) return `The workflow calls role "${step.role}", which this workspace does not have.`;
-    if (!role.connection_id || !role.model) return `${role.name} has no node. Choose a connection and ${step.kind === "tool" ? "tool" : "model"} in Team.`;
+    if (!role.connection_id || !role.model) return `${role.name} has no node. Choose a connection and ${PICK[portForStep(step) ?? "model@1"]} in Team.`;
     const [conn] = await this.db.query<{ disabled_at: Date | null; module_id: string; name: string }>(
       `select disabled_at, module_id, name from connections where id = $1`,
       [role.connection_id],
@@ -1091,7 +1324,8 @@ export class Orchestrator {
 
   /** Retries with exponential backoff (WF-003). Returns false when attempts are used up. */
   private async scheduleRetry(q: Queryable, run: RunRow, step: CallStep, row: StepRow, interrupted: boolean): Promise<boolean> {
-    const policy = step.retry ?? this.opts.defaultRetry;
+    // An outside run is not idempotent: it is tried again only when the step asks for it.
+    const policy = step.retry ?? (isExternal(step) ? { maxAttempts: 1, backoffMs: 0, factor: 1 } : this.opts.defaultRetry);
     if (row.attempt >= policy.maxAttempts) return false;
     const delay = interrupted ? 0 : policy.backoffMs * Math.pow(policy.factor, row.attempt - 1);
     await this.insertStep(q, run, step, row.attempt + 1, {
@@ -1107,7 +1341,7 @@ export class Orchestrator {
     const { run, def } = state;
     const current = this.current(state.rows);
     // The chosen result step, or else the last writing step that ran: with branches, the one that was taken.
-    const writers = [...def.steps].reverse().filter((s) => ["role", "workspace", "merge", "text"].includes(s.kind));
+    const writers = [...def.steps].reverse().filter((s) => ["role", "workspace", "merge", "text", "agent", "automation"].includes(s.kind));
     const outputKey = def.output ?? (writers.find((s) => current.get(s.key)?.status === "succeeded") ?? writers[0])?.key;
     const output = outputOverride ?? (outputKey ? (current.get(outputKey)?.output ?? null) : null);
     let stopped: string[] = [];
@@ -1154,6 +1388,481 @@ export class Orchestrator {
         status,
       ]);
       if (updated.length > 0) await this.emitRun(q, run.id);
+    });
+  }
+
+  // ------------------------------------- agent and automation steps (SRS 4.11)
+
+  /**
+   * Start an agent run or an outside workflow. The step then waits, with what
+   * it needs to find the run again in its checkpoint, so a restarted worker
+   * carries on watching (REL-002).
+   */
+  private async startExternal(state: LoadedRun, step: ExternalStep, pending: StepRow | undefined): Promise<void> {
+    const { run } = state;
+    const actor = actorOf(run);
+    const [role] = await this.db.query<RoleRow>(`select key, name, instructions, connection_id, model, effort from roles where workspace_id = $1 and key = $2`, [
+      run.workspace_id,
+      step.role,
+    ]);
+    if (await this.skipIfOptional(run, step, role, pending)) return;
+    const gate = await this.gate(state, step, role);
+    const attempt = pending?.attempt ?? (await this.nextAttempt(this.db, run.id, step.key));
+    const stepId = pending?.id ?? newId();
+    const failEarly = (message: string, code: string | null) =>
+      this.db.tx(async (q) => {
+        if (!pending) await this.insertStep(q, run, step, attempt, { status: "pending", id: stepId });
+        await this.failStep(q, run, step, stepId, attempt, message, code);
+      });
+    if (gate) return void (await failEarly(gate.message, gate.code));
+
+    let docked: Awaited<ReturnType<Connections["instance"]>>;
+    try {
+      docked = await this.connections.instance(actor, role!.connection_id!);
+    } catch (err) {
+      const e = toNodeError(err);
+      return void (await failEarly(e.message, e.code));
+    }
+    const { instance, row: conn } = docked;
+    const agent = step.kind === "agent" ? instance.ports.agent : undefined;
+    const flow = step.kind === "automation" ? instance.ports.workflow : undefined;
+    if (!agent && !flow) return void (await failEarly(`${conn.name} does not provide ${step.kind === "agent" ? "agents" : "workflows"}.`, "invalid_request"));
+
+    const vars = { input: run.brief, steps: this.stepOutputs(state.rows), ...this.loopVars(state, step.key) };
+    const pick = role!.model!;
+    let info: ExternalInput;
+    if (step.kind === "agent") {
+      const notes = this.graph(state)
+        .inputs(step)
+        .filter((i) => i.note)
+        .map((i) => `Note on the input from ${i.title}: ${i.note}`);
+      const parts = [role!.instructions.trim(), render(step.prompt, vars), ...notes, pending?.feedback ? `Changes asked for: ${pending.feedback}` : ""];
+      info = { skill: pick, text: parts.filter(Boolean).join("\n\n"), data: renderAll(step.data, vars) };
+    } else {
+      info = { workflow: pick, data: renderAll(step.inputs, vars) };
+    }
+    const repeated = await this.repeated(run, conn.id, info);
+    if (repeated) return void (await failEarly(repeated, "loop_detected"));
+    const reserveUsd = step.maxCostUsd ?? externalReserve(step, conn.config);
+    const idempotencyKey = `${run.id}:${step.key}:${attempt}`;
+    await this.db.tx(async (q) => {
+      if (!pending) await this.insertStep(q, run, step, attempt, { status: "pending", id: stepId });
+      await this.updateStep(
+        q,
+        run,
+        stepId,
+        `status = 'running', started_at = now(), role_key = $2, connection_id = $3, node_label = $4, input = $5::jsonb, idempotency_key = $6`,
+        [role!.key, conn.id, `${role!.name} · ${conn.name} · ${pick}`, json(info), idempotencyKey],
+      );
+      await q.query(`update runs set status = 'running', started_at = coalesce(started_at, now()) where id = $1 and status in ('queued', 'waiting')`, [run.id]);
+      await this.emitRun(q, run.id);
+    });
+    try {
+      await this.db.tx((q) => reserve(q, { orgId: run.org_id, workspaceId: run.workspace_id, runId: run.id, stepId, connectionId: conn.id, amountUsd: reserveUsd }));
+    } catch (err) {
+      const e = toNodeError(err);
+      return void (await this.db.tx((q) => this.failStep(q, run, step, stepId, attempt, e.message, e.code)));
+    }
+
+    // Starting must be quick; the run itself may take hours.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new NodeCallError("timeout", "The outside system did not accept the task within 60 s.", true)), 60_000);
+    const deadline = new Date(Date.now() + step.timeoutMs);
+    const ctx = this.externalContext(run, stepId, conn.id, info, reserveUsd, deadline, idempotencyKey, controller.signal);
+    /** Move the step to waiting, unless the task stopped while the outside system answered. */
+    const toWaiting = (patch: Partial<ExternalInput>) =>
+      this.db.tx(async (q) => {
+        const [live] = await q.query<{ status: string }>(`select status from run_steps where id = $1 for update`, [stepId]);
+        if (live?.status !== "running") return false;
+        await this.updateStep(q, run, stepId, `status = 'waiting', input = input || $2::jsonb`, [json(patch)]);
+        await this.emitRun(q, run.id);
+        return true;
+      });
+    try {
+      if (agent) {
+        const handle = await agent.startRun({ ...(pick !== "default" ? { skill: pick } : {}), text: info.text ?? "", ...(Object.keys(info.data ?? {}).length ? { data: info.data } : {}) }, ctx);
+        if (await toWaiting({ handle })) this.watch(run, stepId, conn.id, handle, deadline);
+        else await agent.cancel(handle).catch(() => {});
+        return;
+      }
+      let callbackUrl: string | undefined;
+      if (flow!.callback) {
+        // The token is in the URL; only its hash is kept, and it stops working when the step ends.
+        const token = randomBytes(32).toString("base64url");
+        await this.db.query(`insert into external_callbacks (token_hash, org_id, run_id, step_id) values ($1, $2, $3, $4)`, [hashToken(token), run.org_id, run.id, stepId]);
+        callbackUrl = `${this.opts.publicUrl}/v1/hooks/runs/${token}`;
+      }
+      const { execution, status } = await flow!.trigger(pick, { data: info.data ?? {} }, { ...ctx, ...(callbackUrl ? { callbackUrl } : {}) });
+      const waiting = await toWaiting({
+        execution,
+        polls: 0,
+        ...(flow!.poll ? { nextCheckAt: new Date(Date.now() + pollDelay(0)).toISOString() } : {}),
+        ...(status.state === "running" && status.progress ? { progress: [status.progress] } : {}),
+      });
+      if (!waiting) await flow!.cancel?.(execution).catch(() => {});
+      else if (status.state !== "running") await this.applyExternal(run.id, { stepId, status });
+    } catch (err) {
+      const reason = controller.signal.aborted && controller.signal.reason instanceof NodeCallError ? controller.signal.reason : err;
+      const e = toNodeError(reason);
+      await this.db.tx(async (q) => {
+        await releaseFor(q, stepId);
+        await q.query(`update runs set call_count = call_count + 1 where id = $1`, [run.id]);
+        const [live] = await q.query<{ status: string }>(`select status from run_steps where id = $1`, [stepId]);
+        if (live?.status !== "running") return;
+        await this.failStep(q, run, step, stepId, attempt, e.message, e.code, e.retryable);
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private externalContext(
+    run: RunRow,
+    stepId: string,
+    nodeId: string,
+    info: ExternalInput,
+    budgetUsd: number,
+    deadline: Date,
+    idempotencyKey: string,
+    signal: AbortSignal,
+  ): CallContext {
+    return {
+      call: {
+        callId: stepId,
+        runId: run.id,
+        // The workspace step that started this task, so calls chain across the nest.
+            parentCallId: run.parent_step_id,
+        depth: run.depth,
+        nodeId,
+        input: { ...(info.text ? { text: info.text } : {}), ...(info.data ? { data: info.data } : {}) },
+        budget: { usd: budgetUsd, deadline: deadline.toISOString() },
+        permissions: [`call:node:${nodeId}`],
+        trace: { traceparent: traceparent(run.root_run_id, stepId) },
+        idempotencyKey,
+      },
+      signal,
+      emit: () => {},
+    };
+  }
+
+  /**
+   * Follow an agent run's events in this process. Progress is written to the
+   * step as it comes; questions and the result go through a signal, so the
+   * run's own worker applies them under its lease.
+   */
+  private watch(run: RunRow, stepId: string, connectionId: string, handle: AgentRunHandle, deadline: Date): void {
+    if (this.watchers.has(stepId)) return;
+    const controller = new AbortController();
+    this.watchers.set(stepId, controller);
+    void (async () => {
+      let lines: string[] = [];
+      let flushedAt = 0;
+      const flush = async () => {
+        if (!lines.length) return;
+        const add = lines;
+        lines = [];
+        flushedAt = Date.now();
+        await this.db.tx(async (q) => {
+          const [row] = await q.query<StepRow>(`select * from run_steps where id = $1 for update`, [stepId]);
+          if (row?.status !== "waiting") return;
+          const progress = [...(((row.input ?? {}) as ExternalInput).progress ?? []), ...add].slice(-20);
+          await this.updateStep(q, run, stepId, `input = input || $2::jsonb`, [json({ progress })]);
+        });
+      };
+      try {
+        const { instance } = await this.connections.instance(actorOf(run), connectionId);
+        const agent = instance.ports.agent;
+        if (!agent) return;
+        const ctx = this.externalContext(run, stepId, connectionId, {}, 0, deadline, `${run.id}:${stepId}:watch`, controller.signal);
+        for await (const event of agent.streamEvents(handle, ctx)) {
+          if (controller.signal.aborted) break;
+          if (event.type === "progress") {
+            lines.push(event.text.slice(0, 500));
+            if (Date.now() - flushedAt > 1_000) await flush();
+            continue;
+          }
+          await flush();
+          await this.db.tx((q) => this.engine.signal(q, run.id, "external", { stepId, event } as unknown as Record<string, unknown>));
+          if (event.type !== "needs_input") return;
+        }
+        await flush();
+      } catch (err) {
+        // A dropped stream is picked up again at the next check (externalCheckMs).
+        if (!controller.signal.aborted) console.warn(`[orchestrator] lost the watch on an agent run (step ${stepId}); it resumes shortly:`, err instanceof Error ? err.message : err);
+      } finally {
+        if (this.watchers.get(stepId) === controller) this.watchers.delete(stepId);
+      }
+    })();
+  }
+
+  /** Waiting agent and automation steps: time out, poll, or watch again after a restart. Returns true when something changed. */
+  private async progressExternal(state: LoadedRun): Promise<boolean> {
+    const { run } = state;
+    let changed = false;
+    for (const row of this.current(state.rows).values()) {
+      if (row.status !== "waiting" || (row.kind !== "agent" && row.kind !== "automation") || !row.connection_id) continue;
+      const step = state.def.steps.find((s) => s.key === row.step_key);
+      if (!step || !isExternal(step)) continue;
+      const info = (row.input ?? {}) as ExternalInput;
+      const started = new Date(row.started_at ?? row.created_at).getTime();
+      if (Date.now() >= started + step.timeoutMs) {
+        await this.stopExternal(row, info);
+        await this.failExternal(run, step, row, { message: `${labelOf(step)} took longer than ${durationText(step.timeoutMs)}.`, code: "timeout" });
+        changed = true;
+        continue;
+      }
+      if (step.kind === "agent") {
+        if (info.handle) this.watch(run, row.id, row.connection_id, info.handle, new Date(started + step.timeoutMs));
+        continue;
+      }
+      if (!info.execution || (info.nextCheckAt && new Date(info.nextCheckAt).getTime() > Date.now())) continue;
+      let status: WorkflowStatus | null = null;
+      try {
+        const { instance } = await this.connections.instance(actorOf(run), row.connection_id);
+        const flow = instance.ports.workflow;
+        if (!flow?.poll) continue;
+        status = await flow.poll(info.execution, this.externalContext(run, row.id, row.connection_id, info, 0, new Date(started + step.timeoutMs), row.idempotency_key ?? row.id, AbortSignal.timeout(30_000)));
+      } catch (err) {
+        const e = toNodeError(err);
+        // A passing outage only delays the next poll; anything else ends the step.
+        if (!e.retryable && e.code !== "cancelled") status = { state: "failed", message: e.message, code: e.code };
+      }
+      if (status && status.state !== "running") {
+        await this.applyExternal(run.id, { stepId: row.id, status });
+        changed = true;
+        continue;
+      }
+      const polls = (info.polls ?? 0) + 1;
+      const progress = status?.state === "running" && status.progress ? { progress: [...(info.progress ?? []), status.progress].slice(-20) } : {};
+      await this.db.tx((q) => this.updateStep(q, run, row.id, `input = input || $2::jsonb`, [json({ polls, nextCheckAt: new Date(Date.now() + pollDelay(polls)).toISOString(), ...progress })]));
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Apply what a watcher, a poll or a callback learned about an outside run. */
+  private async applyExternal(runId: string, sig: ExternalSignal): Promise<void> {
+    const [row] = await this.db.query<StepRow>(`select * from run_steps where id = $1 and run_id = $2`, [sig.stepId, runId]);
+    if (!row || row.status !== "waiting") return;
+    const [run] = await this.db.query<RunRow>(`select * from runs where id = $1`, [runId]);
+    if (!run || TERMINAL.has(run.status)) return;
+    const step = run.workflow.steps.find((s) => s.key === row.step_key);
+    if (!step || !isExternal(step)) return;
+    const info = (row.input ?? {}) as ExternalInput;
+    let status = sig.status ?? null;
+    if (sig.callback) {
+      try {
+        const { instance } = await this.connections.instance(actorOf(run), row.connection_id!);
+        const flow = instance.ports.workflow;
+        if (!flow?.callback || !info.execution) return;
+        status = await flow.callback(info.execution, sig.callback.body, sig.callback.headers);
+      } catch (err) {
+        status = { state: "failed", message: `The callback could not be read: ${toNodeError(err).message}`, code: "invalid_request" };
+      }
+    }
+    let event: AgentEvent | null = sig.event ?? null;
+    if (status) {
+      if (status.state === "running") {
+        if (status.progress) event = { type: "progress", text: status.progress };
+      } else if (status.state === "succeeded") {
+        event = { type: "completed", text: textOf(status.output), ...(status.output.data !== undefined ? { data: status.output.data } : {}), ...(status.usage ? { usage: status.usage } : {}) };
+      } else if (status.state === "failed") {
+        event = { type: "failed", message: status.message, ...(status.code ? { code: status.code } : {}), ...(status.retryable !== undefined ? { retryable: status.retryable } : {}) };
+      } else {
+        event = { type: "failed", message: "The outside workflow was cancelled.", code: "cancelled" };
+      }
+    }
+    if (!event) return;
+    switch (event.type) {
+      case "progress":
+        await this.db.tx((q) => this.updateStep(q, run, row.id, `input = input || $2::jsonb`, [json({ progress: [...(info.progress ?? []), event.text.slice(0, 500)].slice(-20) })]));
+        return;
+      case "needs_input":
+        if (step.kind === "agent") await this.openQuestion(run, step, row, info, event.prompt);
+        return;
+      case "completed":
+        return this.completeExternal(run, step, row, event);
+      case "failed":
+        return this.failExternal(run, step, row, event);
+    }
+  }
+
+  private async completeExternal(run: RunRow, step: ExternalStep, row: StepRow, done: { text: string; data?: unknown; usage?: ReportedUsage }): Promise<void> {
+    const [conn] = await this.db.query<{ config: Record<string, unknown>; module_id: string }>(`select config, module_id from connections where id = $1`, [row.connection_id]);
+    const ms = Date.now() - new Date(row.started_at ?? row.created_at).getTime();
+    const reported = typeof done.usage?.costUsd === "number" && Number.isFinite(done.usage.costUsd);
+    // Reported cost when the agent gives one; otherwise the prices set on the connection (COST-004, COST-006).
+    const cost = reported ? Math.max(0, done.usage!.costUsd!) : priceOf(conn?.config ?? {}, ms / 60_000);
+    const output = done.text || (done.data !== undefined ? JSON.stringify(done.data) : "");
+    const tokensIn = Math.max(0, Math.round(done.usage?.inputTokens ?? 0));
+    const tokensOut = Math.max(0, Math.round(done.usage?.outputTokens ?? 0));
+    await this.db.tx(async (q) => {
+      const [live] = await q.query<{ status: string }>(`select status from run_steps where id = $1 for update`, [row.id]);
+      if (live?.status !== "waiting") return;
+      await this.updateStep(
+        q,
+        run,
+        row.id,
+        `status = 'succeeded', output = $2, tokens_in = $3, tokens_out = $4, cost_usd = $5, cost_source = $6, latency_ms = $7, finished_at = now(), input = input - 'asking' - 'question'`,
+        [output, tokensIn, tokensOut, cost, reported ? "reported" : "estimated", ms],
+      );
+      const reservationId = await settleFor(q, row.id, cost);
+      await q.query(
+        `insert into usage_ledger (id, org_id, workspace_id, run_id, step_id, connection_id, role_key, module_id, model, tokens_in, tokens_out, cost_usd, cost_source, reservation_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [newId(), run.org_id, run.workspace_id, run.id, row.id, row.connection_id, row.role_key, conn?.module_id ?? null, (row.input as ExternalInput | null)?.skill ?? (row.input as ExternalInput | null)?.workflow ?? null, tokensIn, tokensOut, cost, reported ? "reported" : "estimated", reservationId],
+      );
+      await q.query(`update runs set cost_usd = cost_usd + $2, call_count = call_count + 1 where id = $1`, [run.id, cost]);
+      await this.closeQuestion(q, row.id);
+      await q.query(`update external_callbacks set used_at = now() where step_id = $1 and used_at is null`, [row.id]);
+      await this.emitRun(q, run.id);
+    });
+    this.watchers.get(row.id)?.abort();
+  }
+
+  private async failExternal(run: RunRow, step: ExternalStep, row: StepRow, failed: { message: string; code?: string; retryable?: boolean }): Promise<void> {
+    const ms = Date.now() - new Date(row.started_at ?? row.created_at).getTime();
+    await this.db.tx(async (q) => {
+      const [live] = await q.query<{ status: string }>(`select status from run_steps where id = $1 for update`, [row.id]);
+      if (live?.status !== "waiting") return;
+      await releaseFor(q, row.id);
+      await q.query(`update runs set call_count = call_count + 1 where id = $1`, [run.id]);
+      await this.closeQuestion(q, row.id);
+      await q.query(`update external_callbacks set used_at = now() where step_id = $1 and used_at is null`, [row.id]);
+      await this.failStep(q, run, step, row.id, row.attempt, failed.message || "The outside system reported a failure.", failed.code ?? "unavailable", failed.retryable ?? false, ms);
+      await q.query(`update runs set status = 'running' where id = $1 and status = 'waiting'`, [run.id]);
+    });
+    this.watchers.get(row.id)?.abort();
+  }
+
+  /** An agent asks a person (MESH-006): one inbox item on the task, with the full path; the answer goes back to the agent. */
+  private async openQuestion(run: RunRow, step: AgentStep, row: StepRow, info: ExternalInput, prompt: string): Promise<void> {
+    // The same question seen again after a watch was picked up is not asked twice.
+    if (info.asking && info.question === prompt) return;
+    if (step.onQuestion === "fail") {
+      await this.stopExternal(row, info);
+      return this.failExternal(run, step, row, { message: `The agent asked a question, and this step fails on questions: ${prompt}`, code: "refused" });
+    }
+    const [role] = await this.db.query<{ name: string }>(`select name from roles where workspace_id = $1 and key = $2`, [run.workspace_id, step.role]);
+    const who = role?.name ?? labelOf(step);
+    await this.db.tx(async (q) => {
+      const [live] = await q.query<{ status: string }>(`select status from run_steps where id = $1 for update`, [row.id]);
+      if (live?.status !== "waiting") return;
+      // A new question replaces one that was never answered.
+      await this.closeQuestion(q, row.id);
+      const approvalId = newId();
+      await q.query(`insert into approvals (id, org_id, run_id, step_id, title, body) values ($1, $2, $3, $4, $5, $6)`, [
+        approvalId,
+        run.org_id,
+        run.id,
+        row.id,
+        `${who} asks`,
+        prompt,
+      ]);
+      await this.updateStep(q, run, row.id, `input = input || $2::jsonb`, [json({ asking: approvalId, question: prompt })]);
+      await this.notify(q, run, {
+        kind: "question",
+        title: `${who} asks: ${run.title}`,
+        body: prompt.slice(0, 4_000),
+        path: await this.path(q, run, `${labelOf(step)} asks`),
+        action: "answer",
+        approvalId,
+      });
+      await q.query(`update runs set status = 'waiting' where id = $1 and status not in ${TERMINAL_SQL}`, [run.id]);
+      await this.emitRun(q, run.id);
+      await this.touchParent(q, run);
+    });
+  }
+
+  /** Cancel an open question and resolve its inbox items. */
+  private async closeQuestion(q: Queryable, stepId: string): Promise<void> {
+    await q.query(`update approvals set decision = 'cancelled', decided_at = now() where step_id = $1 and decision is null`, [stepId]);
+    const items = await q.query<{ id: string; user_id: string }>(
+      `update inbox_items set resolved = true where resolved = false and approval_id in (select id from approvals where step_id = $1) returning id, user_id`,
+      [stepId],
+    );
+    for (const item of items) await this.emitInbox(q, item.user_id, item.id);
+  }
+
+  /** A person answered an agent's question, or stopped the agent. Returns false when the approval is not an agent's question. */
+  private async answerAgent(runId: string, answer: { approvalId: string; decision: Decision; note: string }): Promise<boolean> {
+    const [row] = await this.db.query<StepRow>(`select s.* from approvals a join run_steps s on s.id = a.step_id where a.id = $1 and s.run_id = $2`, [answer.approvalId, runId]);
+    if (!row || row.kind !== "agent") return false;
+    const info = (row.input ?? {}) as ExternalInput;
+    if (row.status !== "waiting" || info.asking !== answer.approvalId || !info.handle) return true;
+    const [run] = await this.db.query<RunRow>(`select * from runs where id = $1`, [runId]);
+    const step = run?.workflow.steps.find((s) => s.key === row.step_key);
+    if (!run || TERMINAL.has(run.status) || !step || step.kind !== "agent") return true;
+    if (answer.decision === "reject") {
+      await this.stopExternal(row, info);
+      await this.failExternal(run, step, row, { message: answer.note ? `Stopped by a person: ${answer.note}` : "Stopped by a person instead of answering.", code: "refused" });
+      return true;
+    }
+    try {
+      const { instance } = await this.connections.instance(actorOf(run), row.connection_id!);
+      const started = new Date(row.started_at ?? row.created_at).getTime();
+      await instance.ports.agent!.provideInput(
+        info.handle,
+        answer.note,
+        this.externalContext(run, row.id, row.connection_id!, info, 0, new Date(started + step.timeoutMs), row.idempotency_key ?? row.id, AbortSignal.timeout(30_000)),
+      );
+    } catch (err) {
+      const e = toNodeError(err);
+      await this.stopExternal(row, info);
+      await this.failExternal(run, step, row, { message: `The answer could not be sent to the agent: ${e.message}`, code: e.code });
+      return true;
+    }
+    await this.db.tx(async (q) => {
+      const progress = [...(info.progress ?? []), `Answered: ${answer.note.slice(0, 200)}`].slice(-20);
+      await this.updateStep(q, run, row.id, `input = (input - 'asking' - 'question') || $2::jsonb`, [json({ progress })]);
+      await q.query(`update runs set status = 'running' where id = $1 and status = 'waiting'`, [runId]);
+      await this.emitRun(q, runId);
+      await this.touchParent(q, run);
+    });
+    return true;
+  }
+
+  /** Ask the outside system to stop a run. Where it cannot, the result is discarded (SRS 5.2). */
+  private async stopExternal(row: StepRow, info: ExternalInput): Promise<void> {
+    this.watchers.get(row.id)?.abort();
+    if (!row.connection_id || info.cancelSent || (!info.handle && !info.execution)) return;
+    await this.db.query(`update run_steps set input = coalesce(input, '{}'::jsonb) || '{"cancelSent": true}'::jsonb where id = $1`, [row.id]);
+    const [run] = await this.db.query<RunRow>(`select * from runs where id = $1`, [row.run_id]);
+    if (!run) return;
+    try {
+      const { instance } = await this.connections.instance(actorOf(run), row.connection_id);
+      if (row.kind === "agent" && info.handle) await instance.ports.agent?.cancel(info.handle);
+      if (row.kind === "automation" && info.execution) await instance.ports.workflow?.cancel?.(info.execution);
+    } catch (err) {
+      console.warn(`[orchestrator] could not stop an outside run (step ${row.id}); its result will be ignored:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** Outside runs of steps that were cancelled or superseded: ask their systems to stop. */
+  private async cancelExternal(runIds: string[]): Promise<void> {
+    const rows = await this.db.query<StepRow>(
+      `select * from run_steps where run_id = any($1::uuid[]) and kind in ('agent', 'automation') and status in ('cancelled', 'superseded')
+         and coalesce(input->>'cancelSent', 'false') <> 'true' and (input ? 'handle' or input ? 'execution')`,
+      [runIds],
+    );
+    for (const row of rows) await this.stopExternal(row, (row.input ?? {}) as ExternalInput);
+  }
+
+  /**
+   * A POST to a one-time callback URL (Workflow port). Checked here and
+   * applied by the run's own worker. False when the token is unknown or spent.
+   */
+  async deliverCallback(token: string, body: unknown, headers: Record<string, string>): Promise<boolean> {
+    if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) return false;
+    return this.db.tx(async (q) => {
+      const [cb] = await q.query<{ run_id: string; step_id: string }>(
+        `select c.run_id, c.step_id from external_callbacks c join run_steps s on s.id = c.step_id
+          where c.token_hash = $1 and c.used_at is null and s.status in ('running', 'waiting')`,
+        [hashToken(token)],
+      );
+      if (!cb) return false;
+      await this.engine.signal(q, cb.run_id, "external", { stepId: cb.step_id, callback: { body, headers } });
+      return true;
     });
   }
 
@@ -1253,7 +1962,7 @@ export class Orchestrator {
       });
     } catch (err) {
       if (!(err instanceof ConclaveError)) throw err;
-      await fail(err.detail ?? err.message, err.status === 402 ? "budget_exceeded" : "invalid_request");
+      await fail(err.detail ?? err.message, err.status === 402 ? "budget_exceeded" : err.status === 409 ? "loop_detected" : "invalid_request");
     }
   }
 
@@ -1300,13 +2009,29 @@ export class Orchestrator {
       throw budgetBlocked(`${target.workspaceName} has used its $${target.budgetMonthUsd.toFixed(2)} monthly budget.`);
     }
 
+    // Loop guard (MESH-012): a task that starts the task it came from, with the same brief, can only go round.
+    const [same] = await q.query<{ title: string }>(
+      `with recursive up as (
+         select id, parent_run_id, task_type_id, brief, title from runs where id = $1
+         union all
+         select p.id, p.parent_run_id, p.task_type_id, p.brief, p.title from runs p join up on up.parent_run_id = p.id
+       )
+       select title from up where task_type_id = $2 and brief = $3::jsonb limit 1`,
+      [run.id, target.taskTypeId, json(brief)],
+    );
+    if (same) {
+      throw new ConclaveError(409, "Loop", `Stopped: ${labelOf(step)} would start "${target.taskTypeName}" again with the same brief as a task above it. That can only go round in circles.`);
+    }
+    // What the sub-task may use: everything above it still applies, plus this workspace's own limits.
+    const inherited = { rules: await this.policies.inheritedFor(q, run) };
+
     const id = newId();
     const firstField = target.inputFields.find((f) => brief[f.key]);
     const base = (firstField ? brief[firstField.key]! : target.taskTypeName).replace(/\s+/g, " ").trim();
     const title = (step.repeat ? `#${iteration} · ${base}` : base).slice(0, 120);
     await q.query(
-      `insert into runs (id, org_id, workspace_id, task_type_id, parent_run_id, parent_step_id, iteration, root_run_id, depth, title, brief, workflow, status, budget_usd, created_by)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, 'queued', $13, $14)`,
+      `insert into runs (id, org_id, workspace_id, task_type_id, parent_run_id, parent_step_id, iteration, root_run_id, depth, title, brief, workflow, status, budget_usd, created_by, inherited)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, 'queued', $13, $14, $15::jsonb)`,
       [
         id,
         run.org_id,
@@ -1322,6 +2047,7 @@ export class Orchestrator {
         json(step.until ? truncateWorkflow(target.workflow, step.until) : target.workflow),
         budget,
         run.created_by,
+        json(inherited),
       ],
     );
     await this.engine.wake(q, id);
@@ -1599,7 +2325,7 @@ export class Orchestrator {
 
   private async resolveRunInbox(q: Queryable, runId: string): Promise<void> {
     const items = await q.query<{ id: string; user_id: string }>(
-      `update inbox_items set resolved = true where run_id = $1 and resolved = false and kind in ('approval', 'budget') returning id, user_id`,
+      `update inbox_items set resolved = true where run_id = $1 and resolved = false and kind in ('approval', 'budget', 'question') returning id, user_id`,
       [runId],
     );
     for (const item of items) await this.emitInbox(q, item.user_id, item.id);
@@ -1624,6 +2350,17 @@ export class Orchestrator {
  * The AI router's prompt. The text to sort comes first, so the answer can be
  * checked against it; the model answers with one category key.
  */
+/** Passages as the text a later step reads: numbered, each with where it came from, so they can be cited. */
+export function formatPassages(passages: Passage[]): string {
+  return passages
+    .map((p, i) => {
+      const title = p.source.title?.trim() || p.source.id;
+      const where = p.source.uri && p.source.uri !== title ? ` (${p.source.uri})` : "";
+      return `[${i + 1}] ${title}${where}\n${p.text.trim()}`;
+    })
+    .join("\n\n");
+}
+
 function classifyPrompt(step: ClassifyStep, value: string): string {
   const options = step.categories.map((c) => `- ${c.key}: ${c.label}${c.description ? ` (${c.description})` : ""}`);
   if (step.other) options.push("- other: fits none of the above");
@@ -1646,4 +2383,47 @@ export function pickCategory(step: ClassifyStep, answer: string): string | null 
 
 function labelOf(step: Step): string {
   return step.kind === "approval" ? step.title : step.key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+
+const actorOf = (run: RunRow): Actor => ({ orgId: run.org_id, userId: run.created_by ?? "" });
+
+const renderAll = (values: Record<string, string>, vars: Parameters<typeof render>[1]): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(values).map(([k, v]) => [k, render(v, vars)]));
+
+
+/** Cost from the prices set on the connection (COST-004): per call, plus per minute of wall-clock time. */
+function priceOf(config: Record<string, unknown>, minutes: number): number {
+  const perCall = Number(config.pricePerCallUsd ?? 0) || 0;
+  const perMinute = Number(config.pricePerMinuteUsd ?? 0) || 0;
+  return Math.max(0, perCall + perMinute * Math.max(0, minutes));
+}
+
+/** Held before an outside run starts when the step sets no cap: the connection's prices over the whole timeout. */
+function externalReserve(step: ExternalStep, config: Record<string, unknown>): number {
+  return priceOf(config, step.timeoutMs / 60_000);
+}
+
+/** Polls back off from 2 s to once a minute. */
+const pollDelay = (polls: number): number => Math.min(60_000, 2_000 * 2 ** polls);
+
+const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");
+
+const textOf = (output: { text?: string; data?: unknown }): string =>
+  output.text ?? (output.data === undefined ? "" : typeof output.data === "string" ? output.data : JSON.stringify(output.data));
+
+function durationText(ms: number): string {
+  if (ms < 120_000) return `${Math.round(ms / 1000)} s`;
+  if (ms < 2 * 3_600_000) return `${Math.round(ms / 60_000)} min`;
+  return `${Math.round(ms / 3_600_000)} h`;
+}
+
+async function releaseFor(q: Queryable, stepId: string): Promise<void> {
+  const rows = await q.query<{ id: string }>(`select id from budget_reservations where step_id = $1 and status = 'held'`, [stepId]);
+  for (const r of rows) await release(q, r.id);
+}
+
+async function settleFor(q: Queryable, stepId: string, amountUsd: number): Promise<string | null> {
+  const [r] = await q.query<{ id: string }>(`select id from budget_reservations where step_id = $1 and status = 'held' limit 1`, [stepId]);
+  if (r) await settle(q, r.id, amountUsd);
+  return r?.id ?? null;
 }

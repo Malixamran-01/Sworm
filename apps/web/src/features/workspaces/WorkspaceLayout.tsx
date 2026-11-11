@@ -70,7 +70,7 @@ export function WorkspaceLayout() {
           </span>
         </div>
         {/* One row that scrolls sideways on narrow screens, instead of wrapping onto a second line. */}
-        <nav aria-label="Workspace sections" className="-mx-4 flex gap-6 overflow-x-auto px-4 whitespace-nowrap md:mx-0 md:px-0">
+        <nav aria-label="Workspace sections" className="no-scrollbar -mx-4 flex gap-6 overflow-x-auto px-4 whitespace-nowrap md:mx-0 md:px-0">
           {tabs.map((t) => (
             <Link
               key={t.label}

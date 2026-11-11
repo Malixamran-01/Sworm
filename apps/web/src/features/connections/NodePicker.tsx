@@ -19,19 +19,27 @@ export function NodePicker({
   onChange: (v: NodeValue) => void;
   idPrefix: string;
   compact?: boolean;
-  /** The role's port decides which connections fit and what to pick second: a model or a tool. */
+  /** The role's port decides which connections fit and what to pick second: a model, tool, agent skill or workflow. */
   port?: string;
 }) {
   const connections = useQuery({ queryKey: ["connections"], queryFn: api.connections });
   const modules = useQuery({ queryKey: ["modules"], queryFn: api.modules, staleTime: Infinity });
-  const isTool = port.startsWith("tool@");
-  const fits = (moduleId: string) => !modules.data || modules.data.find((m) => m.id === moduleId)?.ports.some((p) => p.split("@")[0] === port.split("@")[0]);
+  const kind = port.split("@")[0] as "model" | "tool" | "agent" | "workflow" | "knowledge";
+  const noun = { model: "model", tool: "tool", agent: "skill", workflow: "workflow", knowledge: "source" }[kind] ?? "model";
+  // A dock's connection lists the ports its module said it provides; others, their module's.
+  const fits = (c: { moduleId: string; ports?: string[] }) =>
+    (c.ports ?? modules.data?.find((m) => m.id === c.moduleId)?.ports ?? [port]).some((p) => p.split("@")[0] === kind);
+  const describe = (id: string, text?: string) => (text ? `${id}: ${text.slice(0, 60)}` : id);
   const models = useQuery({
-    queryKey: [isTool ? "tools" : "models", value.connectionId],
-    queryFn: async () =>
-      isTool
-        ? (await api.tools(value.connectionId!)).map((t) => ({ id: t.name, displayName: t.description ? `${t.name}: ${t.description.slice(0, 60)}` : t.name, pricing: undefined }))
-        : api.models(value.connectionId!),
+    queryKey: [`${kind}-list`, value.connectionId],
+    queryFn: async (): Promise<{ id: string; displayName?: string; pricing?: { inputPerMTok: number; outputPerMTok: number } }[]> => {
+      const id = value.connectionId!;
+      if (kind === "tool") return (await api.tools(id)).map((t) => ({ id: t.name, displayName: describe(t.name, t.description) }));
+      if (kind === "knowledge") return (await api.sources(id)).map((s) => ({ id: s.id, displayName: describe(s.name ?? s.id, s.description) }));
+      if (kind === "agent") return (await api.skills(id)).map((s) => ({ id: s.id, displayName: describe(s.name ?? s.id, s.description) }));
+      if (kind === "workflow") return (await api.workflows(id)).map((w) => ({ id: w.id, displayName: describe(w.name ?? w.id, w.description) }));
+      return api.models(id);
+    },
     enabled: !!value.connectionId,
     staleTime: 5 * 60_000,
   });
@@ -47,7 +55,7 @@ export function NodePicker({
         onChange={(e) => onChange({ connectionId: e.target.value || null, model: null })}
       >
         <option value="">No connection</option>
-        {connections.data?.filter((c) => fits(c.moduleId) || c.id === value.connectionId).map((c) => (
+        {connections.data?.filter((c) => fits(c) || c.id === value.connectionId).map((c) => (
           <option key={c.id} value={c.id}>
             {c.name}
           </option>
@@ -55,13 +63,13 @@ export function NodePicker({
       </Select>
       <Select
         id={`${idPrefix}-model`}
-        aria-label={isTool ? "Tool" : "Model"}
+        aria-label={noun.replace(/^./, (c) => c.toUpperCase())}
         className={cx(size)}
         value={value.model ?? ""}
         disabled={!value.connectionId || models.isLoading}
         onChange={(e) => onChange({ ...value, model: e.target.value || null })}
       >
-        <option value="">{models.isLoading ? "Loading…" : models.isError ? `Could not list ${isTool ? "tools" : "models"}` : isTool ? "Choose a tool" : "Choose a model"}</option>
+        <option value="">{models.isLoading ? "Loading…" : models.isError ? `Could not list ${noun}s` : `Choose a ${noun}`}</option>
         {models.data?.map((m) => (
           <option key={m.id} value={m.id}>
             {m.displayName ?? m.id}

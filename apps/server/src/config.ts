@@ -26,6 +26,18 @@ export interface ServerConfig {
   pushHosts: string[] | undefined;
   /** Origins passkeys may be used from: the public URL plus CONCLAVE_WEBAUTHN_ORIGINS (e.g. a dev server). */
   webauthnOrigins: string[];
+  /** Commands sidecar connections may start (CONCLAVE_SIDECARS, separated by ";"), or "*". None by default. */
+  sidecars: string[];
+  /** OpenTelemetry collector for finished traces (CONCLAVE_OTLP_ENDPOINT), with optional headers. */
+  otlp: { endpoint: string; headers: Record<string, string> } | null;
+  /** Owners may install modules from the app (CONCLAVE_MODULE_UPLOADS=on). Off by default: it runs their code on this server. */
+  moduleUploads: boolean;
+  /** The one folder notes connections may read (CONCLAVE_KNOWLEDGE_DIR); `<data dir>/knowledge` by default. */
+  knowledgeDir: string;
+  /** Folder of modules to install at start (CONCLAVE_MODULES_DIR); `<data dir>/modules` by default. */
+  modulesDir: string;
+  /** More modules to install: package names or paths (CONCLAVE_MODULES, comma-separated). */
+  moduleSpecs: string[];
 }
 
 const isLocal = (host: string) => ["127.0.0.1", "localhost", "::1"].includes(host);
@@ -58,6 +70,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ...(env.CONCLAVE_WEBAUTHN_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean),
     ],
     pushHosts: env.CONCLAVE_PUSH_HOSTS ? env.CONCLAVE_PUSH_HOSTS.split(",").map((h) => h.trim()).filter(Boolean) : undefined,
+    otlp: env.CONCLAVE_OTLP_ENDPOINT
+      ? {
+          endpoint: env.CONCLAVE_OTLP_ENDPOINT,
+          // "name=value,name=value", as in OTEL_EXPORTER_OTLP_HEADERS.
+          headers: Object.fromEntries(
+            (env.CONCLAVE_OTLP_HEADERS ?? "")
+              .split(",")
+              .map((pair) => pair.split("="))
+              .filter((kv) => kv.length >= 2 && kv[0]!.trim())
+              .map(([k, ...v]) => [k!.trim(), v.join("=").trim()]),
+          ),
+        }
+      : null,
+    moduleUploads: ["1", "true", "on", "yes"].includes((env.CONCLAVE_MODULE_UPLOADS ?? "").trim().toLowerCase()),
+    knowledgeDir: resolve(env.CONCLAVE_KNOWLEDGE_DIR ?? resolve(dataDir, "knowledge")),
+    modulesDir: resolve(env.CONCLAVE_MODULES_DIR ?? resolve(dataDir, "modules")),
+    moduleSpecs: (env.CONCLAVE_MODULES ?? "")
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean),
+    sidecars: (env.CONCLAVE_SIDECARS ?? "")
+      .split(";")
+      .map((c) => c.trim())
+      .filter(Boolean),
   };
 }
 

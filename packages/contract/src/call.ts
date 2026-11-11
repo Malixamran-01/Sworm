@@ -52,6 +52,8 @@ export const errorCodes = [
   "cancelled",
   "budget_exceeded",
   "loop_detected",
+  /** A rule does not let this task use the node (SRS 4.12). Never retried. */
+  "forbidden",
   "internal",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
@@ -108,3 +110,15 @@ export function toNodeError(err: unknown): NodeError {
   const message = err instanceof Error ? err.message : String(err);
   return { code: "internal", message, retryable: false };
 }
+
+const hex = (id: string): string => id.replace(/-/g, "");
+
+/** The trace id every call under one top-level task shares: its id as 32 hex characters. */
+export const traceIdOf = (rootRunId: string): string => hex(rootRunId);
+
+/**
+ * W3C traceparent for one call. The trace is the top-level task, so a task,
+ * its sub-tasks and every outside system they reach join one trace (MESH-009).
+ * UUIDv7 ids start with a timestamp, so the span id is taken from the random end.
+ */
+export const traceparent = (rootRunId: string, callId: string): string => `00-${traceIdOf(rootRunId)}-${hex(callId).slice(-16)}-01`;

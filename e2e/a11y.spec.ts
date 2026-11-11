@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 /** UX-001: axe finds nothing at WCAG 2.2 AA on every screen, and no screen scrolls sideways. */
 const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-const ids = () => JSON.parse(readFileSync("e2e/.auth/ids.json", "utf8")) as { workspaceId: string; taskId: string };
+const ids = () => JSON.parse(readFileSync("e2e/.auth/ids.json", "utf8")) as { workspaceId: string; taskId: string; outsideId: string; askingTaskId: string };
 
 async function check(page: Page, what: string) {
   // Let queries settle and fonts load so contrast is measured on the real page.
@@ -50,6 +50,15 @@ const screens: { name: string; path: () => string; then?: (page: Page) => Promis
   { name: "New workspace, import", path: () => "/workspaces/new", then: (p) => p.getByRole("button", { name: "Import a package" }).click() },
   { name: "Workspace tasks", path: () => `/workspaces/${ids().workspaceId}` },
   { name: "Task panel", path: () => `/workspaces/${ids().workspaceId}/tasks/${ids().taskId}` },
+  { name: "Trace", path: () => `/workspaces/${ids().workspaceId}/tasks/${ids().taskId}/trace` },
+  {
+    name: "Trace, step open",
+    path: () => `/workspaces/${ids().workspaceId}/tasks/${ids().taskId}/trace`,
+    then: (p) => p.getByRole("listitem").getByRole("button", { expanded: false }).nth(1).click(),
+  },
+  { name: "Insights", path: () => "/insights" },
+  { name: "Insights, spend as a table", path: () => "/insights", then: (p) => p.getByRole("button", { name: "Show as table" }).click() },
+  { name: "Insights, audit trail", path: () => "/insights", then: (p) => p.getByRole("tab", { name: "Audit trail" }).click() },
   { name: "Team", path: () => `/workspaces/${ids().workspaceId}/team` },
   { name: "Workflows", path: () => `/workspaces/${ids().workspaceId}/workflows` },
   // The node editor (WF-007): the task type panel, a selected step, and a workspace step's settings.
@@ -112,6 +121,19 @@ const screens: { name: string; path: () => string; then?: (page: Page) => Promis
       await p.getByLabel("How many runs").getByRole("button", { name: "Each item" }).click();
     },
   },
+  // Agent and Workflow ports (SRS 4.11): agent and automation steps, a question waiting for an answer, and Team.
+  {
+    name: "Workflow editor, agent step",
+    path: () => `/workspaces/${ids().outsideId}/workflows/field-brief`,
+    then: (p) => p.getByRole("button", { name: /^Research/ }).first().click(),
+  },
+  {
+    name: "Workflow editor, automation step",
+    path: () => `/workspaces/${ids().outsideId}/workflows/field-brief`,
+    then: (p) => p.getByRole("button", { name: /^Count/ }).first().click(),
+  },
+  { name: "Task panel, agent asks", path: () => `/workspaces/${ids().outsideId}/tasks/${ids().askingTaskId}` },
+  { name: "Team, agent roles", path: () => `/workspaces/${ids().outsideId}/team` },
   { name: "Library", path: () => `/workspaces/${ids().workspaceId}/library` },
   { name: "Activity", path: () => `/workspaces/${ids().workspaceId}/activity` },
   { name: "Workspace settings", path: () => `/workspaces/${ids().workspaceId}/settings` },
@@ -119,7 +141,9 @@ const screens: { name: string; path: () => string; then?: (page: Page) => Promis
   { name: "Settings, security", path: () => "/settings", then: (p) => p.getByRole("button", { name: "Security" }).click() },
   { name: "Settings, notifications", path: () => "/settings", then: (p) => p.getByRole("button", { name: "Notifications" }).click() },
   { name: "Settings, members", path: () => "/settings", then: (p) => p.getByRole("button", { name: "Members" }).click() },
+  { name: "Settings, single sign-on", path: () => "/settings", then: (p) => p.getByRole("button", { name: "Single sign-on" }).click() },
   { name: "Settings, tokens", path: () => "/settings", then: (p) => p.getByRole("button", { name: "Access tokens" }).click() },
+  { name: "Settings, devices", path: () => "/settings", then: (p) => p.getByRole("button", { name: "Devices" }).click() },
   { name: "Command palette", path: () => "/", then: (p) => p.keyboard.press("Control+K") },
 ];
 

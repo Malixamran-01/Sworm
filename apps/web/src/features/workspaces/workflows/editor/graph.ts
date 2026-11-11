@@ -41,7 +41,10 @@ export const PORT_ROW = 24;
 export const KIND_LOOK: Record<StepKind, { label: string; short: string; palette: TilePalette; help: string; group: "Work" | "Logic" | "People" }> = {
   role: { label: "Model step", short: "M", palette: "blue", help: "A role writes, plans or checks with a model.", group: "Work" },
   tool: { label: "Tool step", short: "T", palette: "teal", help: "Calls one tool, such as a web search.", group: "Work" },
+  lookup: { label: "Look up", short: "Lk", palette: "amber", help: "Finds the passages that answer a question in a knowledge source, such as your notes or docs.", group: "Work" },
   workspace: { label: "Run a workspace", short: "W", palette: "violet", help: "Runs a task type of a workspace as a sub-task, this one included, and waits for it.", group: "Work" },
+  agent: { label: "Agent", short: "Ag", palette: "green", help: "Hands the task to an outside agent and waits, however long it takes. Its questions come to your inbox.", group: "Work" },
+  automation: { label: "Automation", short: "Au", palette: "sky", help: "Starts a workflow in an outside engine and waits for its result.", group: "Work" },
   text: { label: "Text", short: "Tx", palette: "mint", help: "Writes text from a template, with no model and no cost.", group: "Work" },
   branch: { label: "If / Switch", short: "If", palette: "peach", help: "Tests rules and takes the matching way: one case is an If, more is a Switch.", group: "Logic" },
   classify: { label: "AI router", short: "AI", palette: "sky", help: "A model reads the text and picks one of your categories; that way is taken.", group: "Logic" },
@@ -141,10 +144,22 @@ export function makeStep(kind: StepKind, def: WorkflowDefinition, roles: RoleDto
       const role = roles.find((r) => r.port === "tool@1");
       return { ...base, kind, key: uniqueKey(def, "search"), role: role?.key ?? "", args: { query: from }, timeoutMs: 120_000 };
     }
+    case "lookup": {
+      const role = roles.find((r) => r.port === "knowledge@1");
+      return { ...base, kind, key: uniqueKey(def, "lookup"), role: role?.key ?? "", query: from, limit: 5, timeoutMs: 60_000 };
+    }
     case "approval":
       return { ...base, kind, key: uniqueKey(def, "review"), title: "Review", show: from, revises: after ? [after] : [], urgent: false };
     case "workspace":
       return { ...base, kind, key: uniqueKey(def, "subtask"), workspace: "self", taskType: "", inputs: {}, timeoutMs: 24 * 3_600_000 };
+    case "agent": {
+      const role = roles.find((r) => r.port === "agent@1");
+      return { ...base, kind, key: uniqueKey(def, "agent"), role: role?.key ?? "", prompt: from, data: {}, onQuestion: "ask", timeoutMs: 3_600_000 };
+    }
+    case "automation": {
+      const role = roles.find((r) => r.port === "workflow@1");
+      return { ...base, kind, key: uniqueKey(def, "automation"), role: role?.key ?? "", inputs: { text: from }, timeoutMs: 3_600_000 };
+    }
     case "branch":
       return { ...base, kind, key: uniqueKey(def, "check"), value: "", mode: "first", cases: [{ key: "yes", label: "Yes", when: rule("contains", "yes") }] };
     case "classify":
@@ -266,7 +281,8 @@ export function setNotes(draft: Draft, fn: (notes: CanvasNote[]) => CanvasNote[]
 }
 
 /** The step whose output becomes the task's result: the chosen one, or the last step that writes. */
-export const resultKey = (def: WorkflowDefinition) => def.output ?? [...def.steps].reverse().find((s) => ["role", "workspace", "merge", "text"].includes(s.kind))?.key;
+export const resultKey = (def: WorkflowDefinition) =>
+  def.output ?? [...def.steps].reverse().find((s) => ["role", "workspace", "merge", "text", "agent", "automation"].includes(s.kind))?.key;
 
 export const nodeHeight = (s: Step) => {
   const n = portsOf(s).length;

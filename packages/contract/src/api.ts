@@ -13,6 +13,10 @@ export interface ModuleDto {
   docks: string[];
   configFields: ConfigFieldDto[];
   reference: boolean;
+  /** What the module may do: hosts it may reach (config placeholders as written in the manifest) and the secrets it reads. */
+  permissions: { egress: string[]; secrets: string[] };
+  /** "installed" modules were added to this server by its admin; "built-in" ones ship with Conclave. */
+  source: "built-in" | "installed";
 }
 
 export interface ConfigFieldDto {
@@ -28,6 +32,10 @@ export interface ConfigFieldDto {
 export type ConnectionStatus = "working" | "rate_limited" | "signed_out" | "unreachable" | "unknown";
 
 export interface ConnectionDto {
+  /** The ports this connection provides. For a dock, what its module said in the last test. */
+  ports: PortRef[];
+  /** Remote, sidecar and bridge docks: the module behind the dock, from the last test. */
+  docked?: { id: string; version: string; name: string; description: string; ports: string[]; permissions: { egress: string[]; secrets: string[] } };
   id: string;
   name: string;
   moduleId: string;
@@ -50,7 +58,13 @@ export interface ConnectionTestDto {
   ok: boolean;
   status: ConnectionStatus;
   detail: string;
-  capabilities: { models?: { id: string; displayName?: string }[]; tools?: { name: string }[] };
+  capabilities: {
+    models?: { id: string; displayName?: string }[];
+    tools?: { name: string }[];
+    skills?: { id: string; name?: string }[];
+    workflows?: { id: string; name?: string }[];
+    sources?: { id: string; name?: string }[];
+  };
 }
 
 export interface RoleDto {
@@ -106,12 +120,15 @@ export interface TaskTypeInput {
 }
 
 /** Body for adding a role from the editor. */
+/** Ports a role can be filled on. */
+export type RolePort = "model@1" | "tool@1" | "agent@1" | "workflow@1" | "knowledge@1";
+
 export interface RoleInput {
   key?: string;
   name: string;
   description?: string;
   instructions?: string;
-  port: "model@1" | "tool@1";
+  port: RolePort;
 }
 
 export interface WorkspaceDto {
@@ -171,6 +188,12 @@ export interface StepDto {
   children?: ChildRunDto[];
   /** The loop round this row belongs to (WF-010); 1 outside loops. */
   round: number;
+  /** Agent and automation steps: the latest progress lines from the outside system, newest last. */
+  progress?: string[];
+  /** An agent's open question, while it waits for a person (MESH-006). */
+  question?: { approvalId: string; prompt: string };
+  /** The run or execution id in the outside system. */
+  externalId?: string;
 }
 
 export interface ChildRunDto {
@@ -213,7 +236,7 @@ export interface RunDetailDto extends RunSummaryDto {
   depth: number;
 }
 
-export type InboxKind = "approval" | "result" | "problem" | "budget";
+export type InboxKind = "approval" | "result" | "problem" | "budget" | "question";
 
 export interface InboxItemDto {
   id: string;
@@ -226,7 +249,7 @@ export interface InboxItemDto {
   body: string;
   /** Path through nested runs, e.g. "Research brief > Editor > needs approval". */
   path: string;
-  action: "approve" | "open" | "retry" | "reconnect" | null;
+  action: "approve" | "answer" | "open" | "retry" | "reconnect" | null;
   resolved: boolean;
   /** A safety check: delivered even during quiet hours. */
   urgent: boolean;
@@ -270,8 +293,26 @@ export interface MeDto {
 export interface AuthStateDto {
   setupRequired: boolean;
   setupCodeRequired: boolean;
-  providers: { id: string; name: string }[];
+  /** Outside sign-in: OIDC, GitHub and SAML. `startUrl` is where the button goes. */
+  providers: { id: string; name: string; startUrl: string }[];
   me: MeDto | null;
+}
+
+/** Single sign-on as set up on this instance, for owners (ACC-001). Settings come from the server environment. */
+export interface SsoSettingsDto {
+  saml: {
+    name: string;
+    spEntityId: string;
+    acsUrl: string;
+    metadataUrl: string;
+    idpEntityId: string | null;
+    idpSsoUrl: string;
+    idpInitiated: boolean;
+    trustEmail: boolean;
+    signsRequests: boolean;
+    certificates: { subject: string; expiresAt: string; daysLeft: number }[];
+  } | null;
+  oidc: { id: string; name: string; callbackUrl: string }[];
 }
 
 export interface MemberDto {
@@ -387,4 +428,173 @@ export interface TotpSetupDto {
   uri: string;
   /** QR code of the URI as an SVG data URL. */
   qr: string;
+}
+
+// ----------------------------------------------------------------- policies
+
+/** allow: use it. ask: a person approves first. deny: never. */
+export type PolicyEffect = "allow" | "ask" | "deny";
+
+export interface PolicyDecisionDto {
+  effect: PolicyEffect;
+  allowed: boolean;
+  /** Where the deciding rule came from; null when no rule applied. */
+  source: string | null;
+  reason: string;
+}
+
+export interface PolicyRuleDto {
+  id: string;
+  /** "org" rules apply to every workspace and cannot be loosened in one. */
+  scope: "org" | "workspace";
+  connectionId: string;
+  /** Null means the whole connection. */
+  tool: string | null;
+  effect: PolicyEffect;
+}
+
+export interface WorkspacePoliciesDto {
+  rules: PolicyRuleDto[];
+  /** The connections this workspace's roles use, with the tools its tool roles call. */
+  connections: { id: string; name: string; moduleId: string; roles: string[]; tools: string[] }[];
+}
+
+// ------------------------------------------------- trace, insights and audit
+
+/** What kind of system did the work in a span. */
+export type SpanSystem = "model" | "tool" | "agent" | "workflow" | "knowledge" | "person" | "workspace" | "logic";
+
+/**
+ * One piece of work in a task's trace: a task, a sub-task, or one attempt of
+ * a step. Spans from every nested task share one trace (MESH-009).
+ */
+export interface TraceSpanDto {
+  id: string;
+  parentId: string | null;
+  type: "run" | "step";
+  /** For steps, the step kind; for runs, "run". */
+  kind: StepKind | "run";
+  system: SpanSystem;
+  name: string;
+  runId: string;
+  workspaceId: string;
+  workspaceName: string;
+  /** Nesting depth of the task this span belongs to; 0 is the top task. */
+  depth: number;
+  status: RunStatus | StepStatus;
+  startedAt: string;
+  /** Null while the span is still open. */
+  finishedAt: string | null;
+  attempt: number;
+  round: number;
+  /** Sub-tasks: the run number within a repeat. */
+  iteration: number;
+  /** The node that did the work: its role, connection and module. */
+  node: { label: string | null; connectionId: string | null; connectionName: string | null; moduleId: string | null } | null;
+  /** Everything spent under this span, sub-tasks included. */
+  costUsd: number;
+  /** Spent by this span itself. */
+  selfCostUsd: number;
+  costSource: CostSource | null;
+  inputTokens: number;
+  outputTokens: number;
+  /** Money held for the span before it started, and still held now. */
+  reservedUsd: number;
+  heldUsd: number;
+  error: string | null;
+  errorCode: string | null;
+  /** The run or execution id in the outside system. */
+  externalId: string | null;
+  /** W3C traceparent sent to the outside system with this call. */
+  traceparent: string | null;
+  /** A person's decision on an approval or an agent's question. */
+  decision: { decision: string | null; by: string | null; at: string | null; note: string | null } | null;
+  /** What the rules said about this call, before any money was held. */
+  policy: PolicyDecisionDto | null;
+  /** True when the span is in a personal workspace the caller cannot see; details are left out. */
+  hidden: boolean;
+}
+
+export interface TraceSystemDto {
+  connectionId: string;
+  connectionName: string;
+  moduleId: string;
+  system: SpanSystem;
+  calls: number;
+  failures: number;
+  costUsd: number;
+  /** Time spent in this system, added up over its calls. */
+  busyMs: number;
+}
+
+export interface TraceDto {
+  /** 32 hex characters; the trace id in every traceparent of this task tree. */
+  traceId: string;
+  rootRunId: string;
+  /** The task the trace was asked for. */
+  focusRunId: string;
+  title: string;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  costUsd: number;
+  budgetUsd: number;
+  spans: TraceSpanDto[];
+  systems: TraceSystemDto[];
+  counts: { tasks: number; calls: number; retries: number; failures: number; decisions: number; workspaces: number };
+}
+
+export interface UsageSliceDto {
+  id: string;
+  name: string;
+  /** Module id for connections, model name for models. */
+  detail?: string;
+  costUsd: number;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface NodeHealthDto {
+  connectionId: string;
+  connectionName: string;
+  moduleId: string;
+  calls: number;
+  failures: number;
+  retries: number;
+  avgLatencyMs: number | null;
+}
+
+/** Spend and reliability across every workspace the caller can see (COST-006). */
+export interface UsageInsightsDto {
+  days: number;
+  since: string;
+  totals: { costUsd: number; calls: number; inputTokens: number; outputTokens: number; tasks: number; tasksFailed: number; tasksDone: number };
+  /** The same number of days before `since`, for comparison. */
+  previous: { costUsd: number; calls: number };
+  /** One entry per day, oldest first, with days that had no spend. */
+  daily: { day: string; costUsd: number; calls: number }[];
+  byWorkspace: UsageSliceDto[];
+  byConnection: UsageSliceDto[];
+  byModel: UsageSliceDto[];
+  /** How much of the spend is exact: metered and reported are; estimated is not. */
+  bySource: { source: CostSource; costUsd: number; calls: number }[];
+  health: NodeHealthDto[];
+}
+
+export interface AuditEntryDto {
+  id: string;
+  at: string;
+  action: string;
+  actor: { id: string; name: string; email: string } | null;
+  target: string | null;
+  /** The target's name, when it still exists. */
+  targetName: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface AuditPageDto {
+  entries: AuditEntryDto[];
+  /** Pass as `before` to read older entries; null at the end. */
+  next: string | null;
 }

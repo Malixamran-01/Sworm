@@ -70,8 +70,8 @@ export class IdentityProviders {
     this.fetchImpl = fetchImpl;
   }
 
-  list(): { id: string; name: string }[] {
-    return [...this.providers.values()].map((p) => ({ id: p.id, name: p.name }));
+  list(): { id: string; name: string; startUrl: string }[] {
+    return [...this.providers.values()].map((p) => ({ id: p.id, name: p.name, startUrl: `/v1/auth/oidc/${p.id}/start` }));
   }
 
   callbackUrl(id: string): string {

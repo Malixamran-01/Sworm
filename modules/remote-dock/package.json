@@ -1,0 +1,14 @@
+{
+  "name": "@conclave/module-remote-dock",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote dock: a module on its own server, reached over HTTPS with signed Conclave Module Protocol requests.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*"
+  }
+}

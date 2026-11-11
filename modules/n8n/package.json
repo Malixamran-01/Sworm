@@ -1,0 +1,14 @@
+{
+  "name": "@conclave/module-n8n",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "n8n as a Workflow-port node: lists published workflows, starts them through their webhook, follows and stops the execution over the n8n API.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*"
+  }
+}

@@ -8,6 +8,9 @@ import { join } from "node:path";
  * folder and port, started with node directly (no shell), so stopping it
  * works the same on Windows, macOS and Linux.
  */
+/** The sample module (modules/sample-agent) started over stdio. */
+export const SAMPLE_SIDECAR = "node --import tsx modules/sample-agent/src/serve.ts --stdio";
+
 export default async function globalSetup() {
   const port = Number(process.env.E2E_PORT ?? 8799);
   const taken = await fetch(`http://127.0.0.1:${port}/v1/health`).then(
@@ -17,7 +20,15 @@ export default async function globalSetup() {
   if (taken) throw new Error(`Port ${port} is already in use. Stop that server or set E2E_PORT.`);
   const dataDir = mkdtempSync(join(tmpdir(), "conclave-e2e-"));
   const child = spawn(process.execPath, ["--import", "tsx", "apps/server/src/main.ts"], {
-    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", CONCLAVE_DATA_DIR: dataDir, CONCLAVE_PUBLIC_URL: `http://127.0.0.1:${port}` },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      CONCLAVE_DATA_DIR: dataDir,
+      CONCLAVE_PUBLIC_URL: `http://127.0.0.1:${port}`,
+      // The sample agent, as a sidecar, so agent steps and their questions have real content.
+      CONCLAVE_SIDECARS: SAMPLE_SIDECAR,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";

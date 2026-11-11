@@ -28,6 +28,19 @@ export const clock = (iso: string | null): string => {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 };
 
+/** "0.8 s", "42 s", "3 min 10 s", "2 h 5 min". */
+export const duration = (ms: number): string => {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))} ms`;
+  const s = ms / 1000;
+  if (s < 10) return `${s.toFixed(1)} s`;
+  if (s < 60) return `${Math.round(s)} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min${Math.round(s % 60) ? ` ${Math.round(s % 60)} s` : ""}`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h${m % 60 ? ` ${m % 60} min` : ""}`;
+  return `${Math.round(h / 24)} days`;
+};
+
 export const greeting = (): string => {
   const h = new Date().getHours();
   return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";

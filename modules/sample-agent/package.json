@@ -1,0 +1,18 @@
+{
+  "name": "@conclave/module-sample-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A sample agent and workflow engine built only with the public Module SDK. Serve it over HTTP (remote dock) or stdio (sidecar, Local Bridge).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "serve:http": "tsx src/serve.ts --http 8790",
+    "serve:stdio": "tsx src/serve.ts --stdio"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*"
+  }
+}

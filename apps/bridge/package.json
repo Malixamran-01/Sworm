@@ -1,0 +1,21 @@
+{
+  "name": "@conclave/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Conclave Local Bridge: lets a Conclave server use modules and apps on this computer, through one outbound connection, only for targets added here.",
+  "bin": {
+    "conclave-bridge": "./bin/conclave-bridge.mjs"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts run"
+  },
+  "dependencies": {
+    "@conclave/contract": "*",
+    "@conclave/module-sdk": "*",
+    "tsx": "^4.23.0"
+  }
+}

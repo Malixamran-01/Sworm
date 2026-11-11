@@ -7,17 +7,24 @@ import { ConclaveError, type Conclave } from "@conclave/core";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { ZodError } from "zod";
 import { registerGuard } from "./auth/guard";
+import { BridgeHub } from "./bridge";
 import { IdentityProviders } from "./auth/oidc";
+import type { SamlSignIn } from "./auth/saml";
 import { registerRealtime } from "./realtime";
 import { authRoutes } from "./routes/auth";
+import { hookRoutes } from "./routes/hooks";
 import { orgRoutes } from "./routes/org";
 import { notificationRoutes } from "./routes/notifications";
+import { moduleRoutes } from "./routes/modules";
 import { workRoutes } from "./routes/work";
+import { ModuleUploads } from "./uploads";
 
 export interface AppOptions {
   conclave: Conclave;
   /** Outside sign-in providers; none by default. */
   providers?: IdentityProviders;
+  /** SAML sign-in, when set up (ACC-001). */
+  saml?: SamlSignIn | null;
   /** Base URL people reach the app at, for invite links and sign-in callbacks. */
   publicUrl?: string;
   /** Mark cookies Secure. On when the public URL is https. */
@@ -26,6 +33,10 @@ export interface AppOptions {
   setupCode?: string | null;
   webDist?: string | null;
   logger?: boolean;
+  /** Modules installed from the app. Without it the feature is off. */
+  uploads?: ModuleUploads;
+  /** Local Bridge hub; pass the one the bridge dock module was made with. */
+  bridge?: BridgeHub;
 }
 
 declare module "fastify" {
@@ -90,10 +101,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   registerGuard(app, conclave);
 
   app.get("/v1/health", { config: { guard: { auth: "public" } } }, async () => ({ ok: true, db: conclave.db.kind, seq: conclave.bus.lastSeq }));
-  authRoutes(app, { conclave, providers, secureCookies: opts.secureCookies ?? publicUrl.startsWith("https://"), setupCode: opts.setupCode ?? null });
+  authRoutes(app, { conclave, providers, saml: opts.saml ?? null, secureCookies: opts.secureCookies ?? publicUrl.startsWith("https://"), setupCode: opts.setupCode ?? null });
   orgRoutes(app, conclave, publicUrl);
+  // Before the catalogue routes, so /v1/modules/uploads is not read as a module id.
+  moduleRoutes(app, opts.uploads ?? new ModuleUploads(conclave, "", false));
   workRoutes(app, conclave);
   notificationRoutes(app, conclave);
+  hookRoutes(app, conclave);
+  (opts.bridge ?? new BridgeHub()).routes(app, conclave);
   registerRealtime(app, conclave);
 
   if (opts.webDist) {

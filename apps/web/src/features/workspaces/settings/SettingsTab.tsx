@@ -4,6 +4,7 @@ import { clock } from "../../../lib/format";
 import { Button, Card, ErrorNote } from "../../../ui";
 import { BudgetCard } from "../team/TeamTab";
 import { useWorkspace } from "../WorkspaceLayout";
+import { PoliciesCard } from "./PoliciesCard";
 
 export function SettingsTab() {
   const { workspaceId, ws } = useWorkspace();
@@ -21,8 +22,9 @@ export function SettingsTab() {
   if (!ws.data) return null;
 
   return (
-    <main className="grid max-w-[1040px] gap-4 px-8 py-6 lg:grid-cols-2">
+    <main className="grid max-w-[1040px] gap-4 px-4 py-5 md:px-8 md:py-6 lg:grid-cols-2">
       <BudgetCard ws={ws.data} />
+      <PoliciesCard ws={ws.data} />
       <Card as="section" className="flex flex-col gap-3 p-[18px]">
         <h2 className="m-0 text-[15px] font-semibold">Export</h2>
         <p className="m-0 text-[13px] text-muted">Download this workspace as a portable package: roles, task types and workflows, with no keys or secrets.</p>

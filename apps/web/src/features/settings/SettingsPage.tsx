@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { authKey, replaceSession, useCan, useMe } from "../../lib/auth";
+import { DevicesSection } from "./DevicesSection";
+import { SsoSection } from "./SsoSection";
 import { ago } from "../../lib/format";
 import { initials } from "../../lib/palette";
 import { Button, Card, cx, ErrorNote, Field, Input, PageHeader, Pill, Select } from "../../ui";
@@ -26,7 +28,7 @@ const SCOPES: { value: PermissionName; label: string }[] = [
   { value: "member:manage", label: "Manage members" },
 ];
 
-type Tab = "account" | "security" | "notifications" | "members" | "tokens";
+type Tab = "account" | "security" | "notifications" | "members" | "tokens" | "devices" | "sso";
 
 function AccountSection() {
   const me = useMe();
@@ -394,17 +396,21 @@ function TokensSection() {
 export function SettingsPage() {
   const [tab, setTab] = useState<Tab>("account");
   const me = useMe();
+  const canManageOrg = useCan("org:manage");
   const tabs: { key: Tab; label: string }[] = [
     { key: "account", label: "Account" },
     { key: "security", label: "Security" },
     { key: "notifications", label: "Notifications" },
     { key: "members", label: "Members" },
     { key: "tokens", label: "Access tokens" },
+    { key: "devices", label: "Devices" },
+    // Only owners manage how people sign in.
+    ...(canManageOrg ? [{ key: "sso" as const, label: "Single sign-on" }] : []),
   ];
   return (
     <main className="flex flex-col gap-5 px-4 py-5 md:px-9 md:py-7">
       <PageHeader title="Settings" subtitle={`${me.user.name} · ${me.org.name} · ${me.role}`} />
-      <nav aria-label="Settings sections" className="flex gap-6 overflow-x-auto whitespace-nowrap border-b border-line">
+      <nav aria-label="Settings sections" className="no-scrollbar flex gap-6 overflow-x-auto whitespace-nowrap border-b border-line">
         {tabs.map((t) => (
           <button
             key={t.key}
@@ -417,7 +423,7 @@ export function SettingsPage() {
           </button>
         ))}
       </nav>
-      {tab === "account" ? <AccountSection /> : tab === "security" ? <SecuritySection /> : tab === "notifications" ? <NotificationsSection /> : tab === "members" ? <MembersSection /> : <TokensSection />}
+      {tab === "account" ? <AccountSection /> : tab === "security" ? <SecuritySection /> : tab === "notifications" ? <NotificationsSection /> : tab === "members" ? <MembersSection /> : tab === "sso" ? <SsoSection /> : tab === "devices" ? <DevicesSection /> : <TokensSection />}
     </main>
   );
 }

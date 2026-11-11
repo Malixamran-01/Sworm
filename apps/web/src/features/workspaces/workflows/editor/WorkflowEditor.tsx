@@ -176,10 +176,11 @@ export function WorkflowEditor() {
   const warnings = new Map<string, string>();
   for (const s of draft.workflow.steps) {
     if (s.disabled) continue;
-    if (s.kind === "role" || s.kind === "tool" || s.kind === "classify") {
+    if (s.kind === "role" || s.kind === "tool" || s.kind === "lookup" || s.kind === "classify" || s.kind === "agent" || s.kind === "automation") {
       const r = roleOf(s.role);
+      const pick: Record<string, string> = { "model@1": "model", "tool@1": "tool", "agent@1": "agent", "workflow@1": "workflow", "knowledge@1": "source" };
       if (!r) warnings.set(s.key, "choose a role");
-      else if ((!r.connectionId || !r.model) && !s.optional) warnings.set(s.key, `${r.name} has no ${r.port === "tool@1" ? "tool" : "model"} yet`);
+      else if ((!r.connectionId || !r.model) && !s.optional) warnings.set(s.key, `${r.name} has no ${pick[r.port] ?? "node"} yet`);
     } else if (s.kind === "workspace" && !s.taskType) warnings.set(s.key, "choose what to run");
     else if (s.kind === "workspace" && (s.workspace === "self" || s.workspace === w.id) && s.taskType === draft.key && !s.until) {
       warnings.set(s.key, "it runs itself with no place to stop");

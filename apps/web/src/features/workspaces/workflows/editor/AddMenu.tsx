@@ -4,7 +4,7 @@ import { Button, cx, Tile } from "../../../../ui";
 import { KIND_LOOK } from "./graph";
 
 const GROUPS: { name: string; kinds: StepKind[] }[] = [
-  { name: "Work", kinds: ["role", "tool", "workspace", "text"] },
+  { name: "Work", kinds: ["role", "tool", "lookup", "agent", "automation", "workspace", "text"] },
   { name: "Logic", kinds: ["branch", "classify", "merge", "stop"] },
   { name: "People", kinds: ["approval"] },
 ];

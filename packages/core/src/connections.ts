@@ -1,6 +1,6 @@
-import { newId, type ConnectionDto, type ConnectionStatus, type ConnectionTestDto, type ModelInfo, type ToolInfo } from "@conclave/contract";
+import { newId, type AgentSkill, type ConnectionDto, type ConnectionStatus, type ConnectionTestDto, type ModelInfo, type PortRef, type ToolInfo, type KnowledgeSource, type WorkflowInfo } from "@conclave/contract";
 import { iso, json, num, type Db, type Queryable } from "@conclave/db";
-import type { ModuleInstance } from "@conclave/module-sdk";
+import type { DockedModuleInfo, ModuleInstance } from "@conclave/module-sdk";
 import { invalid, notFound, type Actor } from "./errors";
 import { egressFetch, ModuleRuntime, type ModuleRegistry } from "./modules";
 import type { SecretVault } from "./secrets";
@@ -21,6 +21,9 @@ interface ConnectionRow {
   last_checked_at: Date | null;
   disabled_at: Date | null;
   created_at: Date;
+  /** Docks only: the ports and manifest of the module behind the dock, from the last test. */
+  ports: string[] | null;
+  remote_manifest: DockedModuleInfo | null;
   month_spend?: string | number;
   used_by?: { workspaceId: string; workspaceName: string }[] | null;
 }
@@ -40,8 +43,11 @@ export interface ConnectionInput {
   spendLimitUsd?: number | null;
 }
 
-function toDto(row: ConnectionRow): ConnectionDto {
+function toDto(row: ConnectionRow, registry?: ModuleRegistry): ConnectionDto {
+  const declared = registry?.has(row.module_id) ? registry.get(row.module_id).manifest.ports : [];
   return {
+    ports: (row.ports ?? declared) as PortRef[],
+    ...(row.remote_manifest ? { docked: row.remote_manifest } : {}),
     monthSpendUsd: num(row.month_spend),
     usedBy: row.used_by ?? [],
     id: row.id,
@@ -75,7 +81,7 @@ export class Connections {
 
   async list(actor: Actor): Promise<ConnectionDto[]> {
     const rows = await this.db.query<ConnectionRow>(`${CONNECTION_SELECT} where c.org_id = $1 order by c.created_at`, [actor.orgId]);
-    return rows.map(toDto);
+    return rows.map((r) => toDto(r, this.registry));
   }
 
   private async row(q: Queryable, actor: Actor, id: string): Promise<ConnectionRow> {
@@ -86,7 +92,7 @@ export class Connections {
   }
 
   async get(actor: Actor, id: string): Promise<ConnectionDto> {
-    return toDto(await this.row(this.db, actor, id));
+    return toDto(await this.row(this.db, actor, id), this.registry);
   }
 
   /** Split and validate values against the module's config schema. */
@@ -218,13 +224,14 @@ export class Connections {
         config: row.config,
         secrets,
         fetch: egressFetch(mod.manifest, row.config, this.baseFetch),
+        connection: { id: row.id, orgId: row.org_id },
         log: {
           info: (msg, data) => console.info(`[module ${mod.manifest.id}] ${msg}`, data ?? ""),
           warn: (msg, data) => console.warn(`[module ${mod.manifest.id}] ${msg}`, data ?? ""),
         },
       }),
     );
-    return { instance, row: toDto(row) };
+    return { instance, row: toDto(row, this.registry) };
   }
 
   async models(actor: Actor, id: string): Promise<ModelInfo[]> {
@@ -237,6 +244,24 @@ export class Connections {
     return this.runtime.tools(id, instance);
   }
 
+  /** An agent connection's skills (Agent port). */
+  async skills(actor: Actor, id: string): Promise<AgentSkill[]> {
+    const { instance } = await this.instance(actor, id);
+    return this.runtime.skills(id, instance);
+  }
+
+  /** A workflow engine connection's workflows (Workflow port). */
+  async workflows(actor: Actor, id: string): Promise<WorkflowInfo[]> {
+    const { instance } = await this.instance(actor, id);
+    return this.runtime.workflows(id, instance);
+  }
+
+  /** A knowledge connection's sources (Knowledge port). */
+  async sources(actor: Actor, id: string): Promise<KnowledgeSource[]> {
+    const { instance } = await this.instance(actor, id);
+    return this.runtime.sources(id, instance);
+  }
+
   /** "Test" action (CON-003): checks auth and lists discovered capabilities. */
   async test(actor: Actor, id: string): Promise<ConnectionTestDto> {
     let result: ConnectionTestDto;
@@ -244,11 +269,28 @@ export class Connections {
       const { instance } = await this.instance(actor, id);
       const health = await instance.health(AbortSignal.timeout(20_000));
       const capabilities = health.status === "working" && instance.discover ? await instance.discover(AbortSignal.timeout(20_000)) : {};
+      let detail = health.detail;
+      // A dock learns what its module provides; a changed version is said out loud (MOD-011).
+      if (health.status === "working" && instance.dockedModule) {
+        const docked = await instance.dockedModule(AbortSignal.timeout(20_000));
+        const [before] = await this.db.query<{ remote_manifest: DockedModuleInfo | null }>(`select remote_manifest from connections where id = $1`, [id]);
+        const was = before?.remote_manifest;
+        if (was && (was.id !== docked.id || was.version !== docked.version)) detail += ` The module changed from ${was.id} ${was.version} to ${docked.id} ${docked.version}.`;
+        const wider = docked.permissions.egress.filter((h) => !(was?.permissions.egress ?? []).includes(h));
+        if (was && wider.length) detail += ` It now asks to reach ${wider.join(", ")}.`;
+        await this.db.query(`update connections set ports = $2::jsonb, remote_manifest = $3::jsonb where id = $1`, [id, json(docked.ports), json(docked)]);
+        this.runtime.forgetLists(id);
+      }
+      const extra = {
+        ...(capabilities.skills ? { skills: capabilities.skills } : {}),
+        ...(capabilities.workflows ? { workflows: capabilities.workflows } : {}),
+        ...(capabilities.sources ? { sources: capabilities.sources } : {}),
+      };
       result = {
         ok: health.status === "working",
         status: health.status,
-        detail: health.detail,
-        capabilities: { ...(capabilities.models ? { models: capabilities.models } : {}), ...(capabilities.tools ? { tools: capabilities.tools } : {}) },
+        detail,
+        capabilities: { ...(capabilities.models ? { models: capabilities.models } : {}), ...(capabilities.tools ? { tools: capabilities.tools } : {}), ...extra },
       };
     } catch (err) {
       result = { ok: false, status: "unreachable", detail: err instanceof Error ? err.message : String(err), capabilities: {} };

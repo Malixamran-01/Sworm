@@ -64,6 +64,15 @@
   --tile-violet-bg: #f1e3f6;
   --tile-violet-fg: #7a2e8e;
 
+  /* Chart series, in fixed order: a validated categorical set, stepped per theme. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-none: #b8b5ae;
+
   --focus: #2e5bff;
   color-scheme: light;
 }
@@ -122,6 +131,14 @@
   --tile-sky-fg: #9db8f0;
   --tile-violet-bg: #2f1f38;
   --tile-violet-fg: #d7a6e6;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-none: #4d5057;
 
   --focus: #7c95ff;
   color-scheme: dark;
@@ -238,4 +255,12 @@
 /* Dotted grid behind the workflow canvas; size and offset follow pan and zoom. */
 .canvas-grid {
   background-image: radial-gradient(var(--line-strong) 1px, transparent 1.2px);
+}
+
+/* Tab rows scroll sideways on narrow screens without drawing a scrollbar under the tabs. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }

@@ -17,11 +17,15 @@ import type {
   InboxItemDto,
   ModelInfo,
   ToolInfo,
+  KnowledgeSource,
   ModuleDto,
   RunDetailDto,
   RunSummaryDto,
   BuilderAnswers,
   CallTargetDto,
+  SsoSettingsDto,
+  AgentSkill,
+  WorkflowInfo,
   RoleInput,
   TaskTypeInput,
   TemplateDto,
@@ -30,7 +34,24 @@ import type {
   NotificationSettingsDto,
   WorkspaceDetailDto,
   WorkspaceDto,
+  TraceDto,
+  UsageInsightsDto,
+  AuditPageDto,
+  PolicyEffect,
+  PolicyRuleDto,
+  WorkspacePoliciesDto,
 } from "@conclave/contract";
+
+/** A paired Local Bridge device (SRS 8.8), with whether it is connected now. */
+export interface DeviceDto {
+  id: string;
+  name: string;
+  userId: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+  online: boolean;
+  targets: { name: string; kind: string }[];
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -95,6 +116,7 @@ export const api = {
   switchOrg: (orgId: string) => request<MeDto>("POST", "/v1/auth/switch-org", { orgId }),
   createOrg: (name: string) => request<{ id: string; name: string }>("POST", "/v1/orgs", { name }),
   members: () => request<MemberDto[]>("GET", "/v1/org/members"),
+  sso: () => request<SsoSettingsDto>("GET", "/v1/org/sso"),
   setMemberRole: (userId: string, role: RoleName) => request<MemberDto[]>("PATCH", `/v1/org/members/${userId}`, { role }),
   removeMember: (userId: string) => request<void>("DELETE", `/v1/org/members/${userId}`),
   invites: () => request<InviteDto[]>("GET", "/v1/org/invites"),
@@ -109,6 +131,11 @@ export const api = {
 
   modules: () => request<ModuleDto[]>("GET", "/v1/modules"),
   templates: () => request<TemplateDto[]>("GET", "/v1/templates"),
+  // Modules installed from the app (MOD-002).
+  moduleUploads: () => request<{ enabled: boolean; modules: { module: ModuleDto; connections: number }[] }>("GET", "/v1/modules/uploads"),
+  inspectModule: (source: string) => request<{ module: ModuleDto; replaces: string | null; blocked: string | null }>("POST", "/v1/modules/inspect", { source }),
+  installModule: (source: string) => request<ModuleDto>("POST", "/v1/modules/install", { source }),
+  removeModule: (id: string) => request<void>("DELETE", `/v1/modules/uploads/${id}`),
 
   connections: () => request<ConnectionDto[]>("GET", "/v1/connections"),
   createConnection: (body: { moduleId: string; name: string; values: Record<string, unknown>; spendLimitUsd?: number | null }) =>
@@ -118,6 +145,12 @@ export const api = {
   deleteConnection: (id: string) => request<void>("DELETE", `/v1/connections/${id}`),
   models: (id: string) => request<ModelInfo[]>("GET", `/v1/connections/${id}/models`),
   tools: (id: string) => request<ToolInfo[]>("GET", `/v1/connections/${id}/tools`),
+  sources: (id: string) => request<KnowledgeSource[]>("GET", `/v1/connections/${id}/sources`),
+  skills: (id: string) => request<AgentSkill[]>("GET", `/v1/connections/${id}/skills`),
+  workflows: (id: string) => request<WorkflowInfo[]>("GET", `/v1/connections/${id}/workflows`),
+  devices: () => request<DeviceDto[]>("GET", "/v1/devices"),
+  claimDevice: (code: string) => request<{ pairingId: string; name: string }>("POST", "/v1/bridge/claim", { code }),
+  removeDevice: (id: string) => request<void>("DELETE", `/v1/devices/${id}`),
 
   workspaces: () => request<WorkspaceDto[]>("GET", "/v1/workspaces"),
   workspace: (id: string) => request<WorkspaceDetailDto>("GET", `/v1/workspaces/${id}`),
@@ -138,6 +171,12 @@ export const api = {
   updateBudget: (workspaceId: string, body: { taskUsd?: number; monthUsd?: number }) =>
     request<WorkspaceDetailDto>("PATCH", `/v1/workspaces/${workspaceId}/budget`, body),
   exportWorkspace: (workspaceId: string) => request<unknown>("GET", `/v1/workspaces/${workspaceId}/export`),
+  // What tasks may use (SRS 4.12).
+  workspacePolicies: (workspaceId: string) => request<WorkspacePoliciesDto>("GET", `/v1/workspaces/${workspaceId}/policies`),
+  setWorkspacePolicy: (workspaceId: string, body: { connectionId: string; tool?: string | null; effect: PolicyEffect | "default" }) =>
+    request<WorkspacePoliciesDto>("PUT", `/v1/workspaces/${workspaceId}/policies`, body),
+  orgPolicies: () => request<PolicyRuleDto[]>("GET", "/v1/org/policies"),
+  setOrgPolicy: (body: { connectionId: string; tool?: string | null; effect: PolicyEffect | "default" }) => request<PolicyRuleDto[]>("PUT", "/v1/org/policies", body),
   // The node editor (WF-007) and workspace steps (WF-008).
   callTargets: () => request<CallTargetDto[]>("GET", "/v1/call-targets"),
   createTaskType: (workspaceId: string, body: TaskTypeInput) => request<WorkspaceDetailDto>("POST", `/v1/workspaces/${workspaceId}/task-types`, body),
@@ -164,6 +203,13 @@ export const api = {
     request<EstimateDto>("POST", `/v1/workspaces/${workspaceId}/estimate`, { taskTypeId, brief }),
   startTask: (workspaceId: string, taskTypeId: string, brief: Record<string, string>) =>
     request<RunDetailDto>("POST", `/v1/workspaces/${workspaceId}/tasks`, { taskTypeId, brief }, { "idempotency-key": crypto.randomUUID() }),
+  /** The whole tree a task belongs to, as one trace. */
+  trace: (id: string) => request<TraceDto>("GET", `/v1/tasks/${id}/trace`),
+  usage: (days: number) => request<UsageInsightsDto>("GET", `/v1/insights/usage?days=${days}`),
+  audit: (opts: { area?: string; before?: string } = {}) => {
+    const q = new URLSearchParams({ ...(opts.area ? { area: opts.area } : {}), ...(opts.before ? { before: opts.before } : {}) }).toString();
+    return request<AuditPageDto>("GET", `/v1/audit${q ? `?${q}` : ""}`);
+  },
   cancelTask: (id: string) => request<RunDetailDto>("POST", `/v1/tasks/${id}/cancel`),
 
   inbox: () => request<InboxItemDto[]>("GET", "/v1/inbox"),

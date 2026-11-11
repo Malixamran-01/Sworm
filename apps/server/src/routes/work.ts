@@ -48,7 +48,7 @@ const schemas = {
     name: z.string().min(1).max(120),
     description: z.string().max(2_000).optional(),
     instructions: z.string().max(50_000).optional(),
-    port: z.enum(["model@1", "tool@1"]),
+    port: z.enum(["model@1", "tool@1", "agent@1", "workflow@1", "knowledge@1"]),
   }),
   roleUpdate: z.object({
     name: z.string().min(1).max(120).optional(),
@@ -113,6 +113,9 @@ export function workRoutes(app: FastifyInstance, conclave: Conclave) {
   app.post("/v1/connections/:id/enable", connManage, async (req) => conclave.connections.setDisabled(principal(req), idParam(req), false));
   app.get("/v1/connections/:id/models", connRead, async (req) => conclave.connections.models(principal(req), idParam(req)));
   app.get("/v1/connections/:id/tools", connRead, async (req) => conclave.connections.tools(principal(req), idParam(req)));
+  app.get("/v1/connections/:id/skills", connRead, async (req) => conclave.connections.skills(principal(req), idParam(req)));
+  app.get("/v1/connections/:id/sources", connRead, async (req) => conclave.connections.sources(principal(req), idParam(req)));
+  app.get("/v1/connections/:id/workflows", connRead, async (req) => conclave.connections.workflows(principal(req), idParam(req)));
 
   // -------------------------------------------------------------- workspaces
   const inWs = (perm: "workspace:read" | "workspace:edit" | "task:run") => ({ config: { guard: { auth: "user" as const, perm, workspace: wsParam } } });
@@ -161,6 +164,20 @@ export function workRoutes(app: FastifyInstance, conclave: Conclave) {
     withRole(req, await conclave.workspaces.deleteRole(principal(req), wsParam(req), keyParam("roleKey")(req))),
   );
 
+  // ---------------------------------------------------------------- policies
+  // What tasks may use (SRS 4.12). A workspace's editors set its rules; only the organisation's managers set rules for everyone.
+  const policySet = z.object({ connectionId: uuid, tool: z.string().max(200).nullable().optional(), effect: z.enum(["allow", "ask", "deny", "default"]) });
+  app.get("/v1/workspaces/:id/policies", inWs("workspace:read"), async (req) => conclave.policies.forWorkspace(principal(req), wsParam(req)));
+  app.put("/v1/workspaces/:id/policies", inWs("workspace:edit"), async (req) => {
+    await conclave.policies.set(principal(req), { workspaceId: wsParam(req), ...policySet.parse(req.body) });
+    return conclave.policies.forWorkspace(principal(req), wsParam(req));
+  });
+  app.get("/v1/org/policies", { config: { guard: { auth: "user", perm: "connection:read" } } }, async (req) => conclave.policies.forOrg(principal(req)));
+  app.put("/v1/org/policies", { config: { guard: { auth: "user", perm: "org:manage" } } }, async (req) => {
+    await conclave.policies.set(principal(req), { workspaceId: null, ...policySet.parse(req.body) });
+    return conclave.policies.forOrg(principal(req));
+  });
+
   // ------------------------------------------------------------------- tasks
   app.get("/v1/workspaces/:id/tasks", inWs("workspace:read"), async (req) => conclave.orchestrator.list(principal(req), wsParam(req)));
   app.post("/v1/workspaces/:id/tasks", inWs("task:run"), async (req, reply) => {
@@ -175,12 +192,31 @@ export function workRoutes(app: FastifyInstance, conclave: Conclave) {
   app.get("/v1/tasks/:id", { config: { guard: { auth: "user", perm: "workspace:read", workspace: taskWs } } }, async (req) =>
     conclave.orchestrator.get(principal(req), uuid.parse(param("id")(req))),
   );
+  // One trace for the whole tree the task belongs to: sub-tasks and every outside system (MESH-009).
+  app.get("/v1/tasks/:id/trace", { config: { guard: { auth: "user", perm: "workspace:read", workspace: taskWs } } }, async (req) =>
+    conclave.insights.trace(principal(req), uuid.parse(param("id")(req))),
+  );
   app.post("/v1/tasks/:id/cancel", { config: { guard: { auth: "user", perm: "task:run", workspace: taskWs } } }, async (req) =>
     conclave.orchestrator.cancel(principal(req), uuid.parse(param("id")(req))),
   );
   app.post("/v1/approvals/:id", { config: { guard: { auth: "user", perm: "approval:decide", workspace: approvalWs } } }, async (req) =>
     conclave.orchestrator.decide(principal(req), uuid.parse(param("id")(req)), schemas.decision.parse(req.body)),
   );
+
+  // ---------------------------------------------------------------- insights
+  app.get("/v1/insights/usage", { config: { guard: { auth: "user", perm: "workspace:read" } } }, async (req) => {
+    const q = z.object({ days: z.coerce.number().int().optional() }).parse(req.query);
+    return conclave.insights.usage(principal(req), q.days ?? 30);
+  });
+  // The audit trail names people and what they did across the organisation, so only its managers read it.
+  app.get("/v1/audit", { config: { guard: { auth: "user", perm: "org:manage" } } }, async (req) => {
+    const q = z.object({ area: z.string().max(40).optional(), before: uuid.optional(), limit: z.coerce.number().int().min(1).max(200).optional() }).parse(req.query);
+    return conclave.insights.audit(principal(req), {
+      ...(q.area ? { area: q.area } : {}),
+      ...(q.before ? { before: q.before } : {}),
+      ...(q.limit ? { limit: q.limit } : {}),
+    });
+  });
 
   // ------------------------------------------------------------------- inbox (the caller's own items)
   app.get("/v1/inbox", { config: { guard: { auth: "user" } } }, async (req) => {

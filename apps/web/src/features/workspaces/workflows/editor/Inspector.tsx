@@ -9,6 +9,7 @@ import {
   type InputField,
   type Repeat,
   type RoleDto,
+  type RolePort,
   type Step,
   type WorkspaceDetailDto,
   type WorkspaceStep,
@@ -88,7 +89,17 @@ function useSetWorkspace(ws: WorkspaceDetailDto) {
 }
 
 /** Pick the role a step calls, or add a new one on the right port. */
-export function RolePicker({ ws, port, value, onChange }: { ws: WorkspaceDetailDto; port: "model@1" | "tool@1"; value: string; onChange: (key: string) => void }) {
+const ROLE_HELP: Record<RolePort, string> = {
+  "model@1": "Workflows call roles, never a model by name. Fill the role below or in Team.",
+  "tool@1": "A role filled by a tool connection.",
+  "agent@1": "A role filled by an agent connection: a remote, sidecar or Local Bridge module.",
+  "workflow@1": "A role filled by a workflow engine connection, such as a webhook workflow.",
+  "knowledge@1": "A role filled by a knowledge connection: a notes folder, or a search endpoint.",
+};
+const ROLE_PLACEHOLDER: Record<RolePort, string> = { "model@1": "Fact checker", "tool@1": "Web search", "agent@1": "Field researcher", "workflow@1": "CRM update", "knowledge@1": "Handbook" };
+const PICK_WORD: Record<string, string> = { "model@1": "model", "tool@1": "tool", "agent@1": "skill", "workflow@1": "workflow", "knowledge@1": "source" };
+
+export function RolePicker({ ws, port, value, onChange }: { ws: WorkspaceDetailDto; port: RolePort; value: string; onChange: (key: string) => void }) {
   const id = useId();
   const setWs = useSetWorkspace(ws);
   const [adding, setAdding] = useState(false);
@@ -106,7 +117,7 @@ export function RolePicker({ ws, port, value, onChange }: { ws: WorkspaceDetailD
   const options = ws.roles.filter((r) => r.port === port);
   return (
     <div className="flex flex-col gap-1.5">
-      <Field label="Role" htmlFor={id} help={port === "tool@1" ? "A role filled by a tool connection." : "Workflows call roles, never a model by name. Fill the role below or in Team."}>
+      <Field label="Role" htmlFor={id} help={ROLE_HELP[port]}>
         <Select
           id={id}
           value={options.some((r) => r.key === value) ? value : ""}
@@ -131,7 +142,7 @@ export function RolePicker({ ws, port, value, onChange }: { ws: WorkspaceDetailD
             if (name.trim()) create.mutate();
           }}
         >
-          <Input aria-label="New role name" placeholder={port === "tool@1" ? "Web search" : "Fact checker"} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <Input aria-label="New role name" placeholder={ROLE_PLACEHOLDER[port]} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           <Button type="submit" variant="primary" disabled={!name.trim() || create.isPending}>
             Add
           </Button>
@@ -154,7 +165,8 @@ export function RoleSetup({ ws, role }: { ws: WorkspaceDetailDto; role: RoleDto 
   const assign = useMutation({ mutationFn: () => api.assignRole(ws.id, role.key, node), onSuccess: setWs });
   const save = useMutation({ mutationFn: () => api.updateRole(ws.id, role.key, { instructions }), onSuccess: setWs });
   const nodeDirty = node.connectionId !== role.connectionId || node.model !== role.model;
-  const isTool = role.port === "tool@1";
+  // Instructions guide models and agents; tools and outside workflows take none.
+  const takesInstructions = role.port === "model@1" || role.port === "agent@1";
   return (
     <div className="flex flex-col gap-3 rounded-[12px] border border-line bg-surface-2 p-3">
       <div className="flex flex-col gap-1.5">
@@ -162,12 +174,12 @@ export function RoleSetup({ ws, role }: { ws: WorkspaceDetailDto; role: RoleDto 
         <NodePicker idPrefix={`insp-${role.key}`} value={node} onChange={setNode} port={role.port} compact />
         {nodeDirty ? (
           <Button size="sm" variant="primary" className="self-start" disabled={assign.isPending || (!!node.connectionId && !node.model)} onClick={() => assign.mutate()}>
-            Save {isTool ? "tool" : "model"}
+            Save {PICK_WORD[role.port] ?? "node"}
           </Button>
         ) : null}
         <ErrorNote error={assign.error} />
       </div>
-      {isTool ? null : (
+      {!takesInstructions ? null : (
         <Field label={`${role.name}'s instructions`} htmlFor={id} help="Shared by every step that calls this role.">
           <Textarea id={id} rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} className="text-[13px]" />
           {instructions !== role.instructions ? (
@@ -333,8 +345,11 @@ export function StepPanel({
 
       {step.kind === "role" ? <RoleFields draft={draft} step={step} ws={ws} onChange={onChange} /> : null}
       {step.kind === "tool" ? <ToolFields draft={draft} step={step} ws={ws} onChange={onChange} /> : null}
+      {step.kind === "lookup" ? <LookupFields draft={draft} step={step} ws={ws} onChange={onChange} /> : null}
       {step.kind === "approval" ? <ApprovalFields draft={draft} step={step} before={before} onChange={onChange} /> : null}
       {step.kind === "workspace" ? <WorkspaceFields draft={draft} step={step} ws={ws} targets={targets} onChange={onChange} /> : null}
+      {step.kind === "agent" ? <AgentFields draft={draft} step={step} ws={ws} onChange={onChange} /> : null}
+      {step.kind === "automation" ? <AutomationFields draft={draft} step={step} ws={ws} onChange={onChange} /> : null}
       {step.kind === "branch" ? <BranchFields draft={draft} step={step} onChange={onChange} /> : null}
       {step.kind === "classify" ? <ClassifyFields draft={draft} step={step} ws={ws} onChange={onChange} /> : null}
       {step.kind === "merge" ? <MergeFields step={step} onChange={onChange} /> : null}
@@ -424,7 +439,7 @@ export function StepPanel({
       ) : null}
 
       <div className="flex flex-col gap-2 text-[13px]">
-        {step.kind === "role" || step.kind === "tool" ? (
+        {step.kind === "role" || step.kind === "tool" || step.kind === "lookup" || step.kind === "agent" || step.kind === "automation" ? (
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={step.optional} onChange={(e) => onChange({ ...step, optional: e.target.checked })} />
             Skip this step when its role has no node
@@ -474,6 +489,29 @@ function RoleFields({ draft, step, ws, onChange }: { draft: Draft; step: Extract
   );
 }
 
+/** A Look up step: which source, what to look for, and how many passages to pass on. */
+function LookupFields({ draft, step, ws, onChange }: { draft: Draft; step: Extract<Step, { kind: "lookup" }>; ws: WorkspaceDetailDto; onChange: (s: Step) => void }) {
+  const role = ws.roles.find((r) => r.key === step.role);
+  return (
+    <>
+      <RolePicker ws={ws} port="knowledge@1" value={step.role} onChange={(role) => onChange({ ...step, role })} />
+      {role ? <RoleSetup key={`${role.key}:${role.connectionId}:${role.model}`} ws={ws} role={role} /> : null}
+      <TemplateField label="Look for" value={step.query} onChange={(query) => onChange({ ...step, query })} refs={refsFor(draft, step.key)} rows={2} />
+      <Field label="Passages to pass on" htmlFor="lookup-limit" help="The best matches, numbered, each with where it came from, so a later step can cite them.">
+        <Input
+          id="lookup-limit"
+          type="number"
+          min={1}
+          max={20}
+          value={step.limit}
+          onChange={(e) => onChange({ ...step, limit: Math.max(1, Math.min(20, Math.round(Number(e.target.value)) || 1)) })}
+          className="!w-24"
+        />
+      </Field>
+    </>
+  );
+}
+
 function ToolFields({ draft, step, ws, onChange }: { draft: Draft; step: Extract<Step, { kind: "tool" }>; ws: WorkspaceDetailDto; onChange: (s: Step) => void }) {
   const role = ws.roles.find((r) => r.key === step.role);
   const args = Object.entries(step.args);
@@ -499,6 +537,96 @@ function ToolFields({ draft, step, ws, onChange }: { draft: Draft; step: Extract
           Add an argument
         </Button>
       </section>
+    </>
+  );
+}
+
+/** Named values a step sends on, each a template: tool arguments, agent data, workflow inputs. */
+function NamedValues({ draft, stepKey, label, noun, values, onChange }: { draft: Draft; stepKey: string; label: string; noun: string; values: Record<string, string>; onChange: (v: Record<string, string>) => void }) {
+  const list = Object.entries(values);
+  const set = (next: [string, string][]) => onChange(Object.fromEntries(next));
+  return (
+    <section className="flex flex-col gap-2" aria-label={label}>
+      <span className="text-[13px] font-semibold">{label}</span>
+      {list.length === 0 ? <p className="m-0 text-xs text-muted">None.</p> : null}
+      {list.map(([k, v], i) => (
+        <div key={i} className="flex flex-col gap-1 rounded-[10px] border border-line p-2.5">
+          <div className="flex gap-2">
+            <Input aria-label={`${noun} ${i + 1} name`} value={k} onChange={(e) => set(list.map((a, j) => (j === i ? [e.target.value.replace(/\s/g, ""), a[1]] : a)))} className="!h-8 font-mono text-[12px]" />
+            <Button size="sm" variant="ghost" onClick={() => set(list.filter((_, j) => j !== i))}>
+              Remove
+            </Button>
+          </div>
+          <TemplateField label={k || "Value"} value={v} onChange={(val) => set(list.map((a, j) => (j === i ? [a[0], val] : a)))} refs={refsFor(draft, stepKey)} rows={2} />
+        </div>
+      ))}
+      <Button size="sm" className="self-start" onClick={() => set([...list, [`${noun.toLowerCase()}${list.length + 1}`, ""]])}>
+        Add {noun === "Input" ? "an input" : `a ${noun.toLowerCase()}`}
+      </Button>
+    </section>
+  );
+}
+
+/** How long an outside run may take, and the most it may spend. */
+function OutsideLimits({ step, onChange }: { step: Extract<Step, { kind: "agent" | "automation" }>; onChange: (s: Step) => void }) {
+  const id = useId();
+  const minutes = Math.round(step.timeoutMs / 60_000);
+  return (
+    <div className="grid grid-cols-2 gap-2.5">
+      <Field label="Give up after (minutes)" htmlFor={`${id}-t`} help="Includes time waiting for answers.">
+        <Input
+          id={`${id}-t`}
+          inputMode="numeric"
+          value={String(minutes)}
+          onChange={(e) => onChange({ ...step, timeoutMs: Math.min(10_080, Math.max(1, Number(e.target.value.replace(/\D/g, "")) || 1)) * 60_000 })}
+        />
+      </Field>
+      <Field label="Most it may cost (USD)" htmlFor={`${id}-c`} help="Held from the budget while it runs. Empty: the connection's prices.">
+        <Input
+          id={`${id}-c`}
+          inputMode="decimal"
+          placeholder="From prices"
+          value={step.maxCostUsd === undefined ? "" : String(step.maxCostUsd)}
+          onChange={(e) => {
+            const { maxCostUsd: _m, ...rest } = step;
+            const n = Number(e.target.value);
+            onChange((e.target.value.trim() === "" || !Number.isFinite(n) ? rest : { ...rest, maxCostUsd: Math.max(0, n) }) as Step);
+          }}
+        />
+      </Field>
+    </div>
+  );
+}
+
+function AgentFields({ draft, step, ws, onChange }: { draft: Draft; step: Extract<Step, { kind: "agent" }>; ws: WorkspaceDetailDto; onChange: (s: Step) => void }) {
+  const role = ws.roles.find((r) => r.key === step.role);
+  const qId = useId();
+  return (
+    <>
+      <RolePicker ws={ws} port="agent@1" value={step.role} onChange={(role) => onChange({ ...step, role })} />
+      {role ? <RoleSetup key={`${role.key}:${role.connectionId}:${role.model}`} ws={ws} role={role} /> : null}
+      <TemplateField label="Task for the agent" value={step.prompt} onChange={(prompt) => onChange({ ...step, prompt })} refs={refsFor(draft, step.key)} rows={5} />
+      <NamedValues draft={draft} stepKey={step.key} label="Data for the agent" noun="Value" values={step.data} onChange={(data) => onChange({ ...step, data })} />
+      <Field label="When the agent asks something" htmlFor={qId}>
+        <Select id={qId} value={step.onQuestion} onChange={(e) => onChange({ ...step, onQuestion: e.target.value as "ask" | "fail" })}>
+          <option value="ask">Ask in the inbox and send the answer back</option>
+          <option value="fail">Fail the step</option>
+        </Select>
+      </Field>
+      <OutsideLimits step={step} onChange={onChange} />
+    </>
+  );
+}
+
+function AutomationFields({ draft, step, ws, onChange }: { draft: Draft; step: Extract<Step, { kind: "automation" }>; ws: WorkspaceDetailDto; onChange: (s: Step) => void }) {
+  const role = ws.roles.find((r) => r.key === step.role);
+  return (
+    <>
+      <RolePicker ws={ws} port="workflow@1" value={step.role} onChange={(role) => onChange({ ...step, role })} />
+      {role ? <RoleSetup key={`${role.key}:${role.connectionId}:${role.model}`} ws={ws} role={role} /> : null}
+      <NamedValues draft={draft} stepKey={step.key} label="Inputs sent to the workflow" noun="Input" values={step.inputs} onChange={(inputs) => onChange({ ...step, inputs })} />
+      <p className="m-0 text-xs text-muted">The workflow's result, text or JSON, is this step's output. It may answer at once, be checked on, or call back when done.</p>
+      <OutsideLimits step={step} onChange={onChange} />
     </>
   );
 }

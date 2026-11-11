@@ -124,6 +124,64 @@ export const toolStepSchema = z.object({
 });
 
 /**
+ * Looks something up in the knowledge source filling `role` (Knowledge port,
+ * SRS 4.11) and passes the passages on, numbered, with where each came from.
+ * The source is chosen when the role is filled.
+ */
+export const lookupStepSchema = z.object({
+  ...baseStep,
+  kind: z.literal("lookup"),
+  role: z.string().min(1),
+  /** What to look for, as a template. */
+  query: z.string().min(1).max(10_000),
+  /** Most passages to pass on. */
+  limit: z.number().int().min(1).max(20).default(5),
+  retry: retryPolicySchema.optional(),
+  timeoutMs: z.number().int().min(1_000).max(3_600_000).default(60_000),
+  /** Overrides the connection's per-call price (COST-004). */
+  pricePerCallUsd: z.number().min(0).optional(),
+});
+
+/**
+ * Hands a task to the outside agent filling `role` (Agent port, SRS 4.11) and
+ * waits for it, across restarts. Its questions reach the inbox and the answer
+ * goes back to the agent (MESH-006). The skill is chosen when the role is filled.
+ */
+export const agentStepSchema = z.object({
+  ...baseStep,
+  kind: z.literal("agent"),
+  role: z.string().min(1),
+  /** What the agent should do, as a template. */
+  prompt: z.string().min(1).max(50_000),
+  /** Extra named values for the agent, each a template. */
+  data: z.record(z.string(), z.string()).default({}),
+  /** ask: questions go to the inbox. fail: a question fails the step. */
+  onQuestion: z.enum(["ask", "fail"]).default("ask"),
+  /** Most this step may spend; reserved before it starts (COST). Omitted = the connection's prices. */
+  maxCostUsd: z.number().min(0).max(10_000).optional(),
+  /** Outside runs are not idempotent, so a failed one is tried again only when this says so. */
+  retry: retryPolicySchema.optional(),
+  /** The whole run, including time waiting for answers. */
+  timeoutMs: z.number().int().min(10_000).max(7 * 24 * 3_600_000).default(3_600_000),
+});
+
+/**
+ * Starts a workflow in an outside engine (Workflow port, SRS 4.11) and waits
+ * for its result: at once, by polling, or by callback. The workflow is chosen
+ * when the role is filled.
+ */
+export const automationStepSchema = z.object({
+  ...baseStep,
+  kind: z.literal("automation"),
+  role: z.string().min(1),
+  /** Named values sent to the workflow, each a template. */
+  inputs: z.record(z.string(), z.string()).default({}),
+  maxCostUsd: z.number().min(0).max(10_000).optional(),
+  retry: retryPolicySchema.optional(),
+  timeoutMs: z.number().int().min(10_000).max(7 * 24 * 3_600_000).default(3_600_000),
+});
+
+/**
  * How often a workspace step runs the called task type.
  * - times: a fixed number of runs, `parallel` at once.
  * - each: one run per item of a list (JSON array, or one item per line) rendered from `items`.
@@ -234,7 +292,10 @@ export const stepSchema = z.discriminatedUnion("kind", [
   roleStepSchema,
   approvalStepSchema,
   toolStepSchema,
+  lookupStepSchema,
   workspaceStepSchema,
+  agentStepSchema,
+  automationStepSchema,
   branchStepSchema,
   classifyStepSchema,
   mergeStepSchema,
@@ -249,7 +310,30 @@ export type StopStep = z.infer<typeof stopStepSchema>;
 export type RoleStep = z.infer<typeof roleStepSchema>;
 export type ApprovalStep = z.infer<typeof approvalStepSchema>;
 export type ToolStep = z.infer<typeof toolStepSchema>;
+export type LookupStep = z.infer<typeof lookupStepSchema>;
 export type WorkspaceStep = z.infer<typeof workspaceStepSchema>;
+export type AgentStep = z.infer<typeof agentStepSchema>;
+export type AutomationStep = z.infer<typeof automationStepSchema>;
+/** Steps that hand work to an outside node and wait for it. */
+export type ExternalStep = AgentStep | AutomationStep;
+/** The port a role must be filled on for a step kind, or null when the step calls no role. */
+export function portForStep(s: Step): "model@1" | "tool@1" | "agent@1" | "workflow@1" | "knowledge@1" | null {
+  switch (s.kind) {
+    case "role":
+    case "classify":
+      return "model@1";
+    case "tool":
+      return "tool@1";
+    case "lookup":
+      return "knowledge@1";
+    case "agent":
+      return "agent@1";
+    case "automation":
+      return "workflow@1";
+    default:
+      return null;
+  }
+}
 export type Step = z.infer<typeof stepSchema>;
 export type StepKind = Step["kind"];
 
@@ -267,7 +351,8 @@ export const canvasNoteSchema = z.object({
 export type CanvasNote = z.infer<typeof canvasNoteSchema>;
 
 /** Steps whose failure a connector can catch: the ones that call something. */
-export const canFail = (s: Step) => s.kind === "role" || s.kind === "tool" || s.kind === "workspace" || s.kind === "classify";
+export const canFail = (s: Step) =>
+  s.kind === "role" || s.kind === "tool" || s.kind === "lookup" || s.kind === "workspace" || s.kind === "classify" || s.kind === "agent" || s.kind === "automation";
 
 /** The named outputs of a step: an If/Switch's cases and "else", an AI router's categories and "other". */
 export function portsOf(s: Step): { key: string; label: string }[] {
@@ -505,6 +590,12 @@ export function renameStep(def: WorkflowDefinition, from: string, to: string): W
         return { ...base, show: text(base.show), revises: base.revises.map(swap) };
       case "tool":
         return { ...base, args: Object.fromEntries(Object.entries(base.args).map(([k, v]) => [k, text(v)])) };
+      case "lookup":
+        return { ...base, query: text(base.query) };
+      case "agent":
+        return { ...base, prompt: text(base.prompt), data: Object.fromEntries(Object.entries(base.data).map(([k, v]) => [k, text(v)])) };
+      case "automation":
+        return { ...base, inputs: Object.fromEntries(Object.entries(base.inputs).map(([k, v]) => [k, text(v)])) };
       case "workspace":
         return {
           ...base,
@@ -627,7 +718,7 @@ export const roleTemplateSchema = z.object({
   description: z.string().default(""),
   instructions: z.string().default(""),
   /** The port a node must implement to fill this role (MKT-006). */
-  port: z.enum(["model@1", "tool@1"]).default("model@1"),
+  port: z.enum(["model@1", "tool@1", "agent@1", "workflow@1", "knowledge@1"]).default("model@1"),
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
 });
 export type RoleTemplate = z.infer<typeof roleTemplateSchema>;
